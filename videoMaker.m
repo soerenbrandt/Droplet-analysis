@@ -3,7 +3,7 @@ classdef videoMaker
     % respective features and analysis.
     %
     % Object detection (based on videoFrame class) includes
-    %   'circles'                     - detects circular objects in video frame
+    %   'circle'                     - detects circular objects in video frame
     %   'bright' (default) or 'dark'  - object polarity compared to background
     %   'fluorescence' (default) or 'brightfield' - clarifies image mode
     %   'rect'                        - specify image region for detection
@@ -21,6 +21,7 @@ classdef videoMaker
         frames % array with analysis of each frame
         videoLink % file destination to original video
         analysis % = struct('tracking',[],'distribution',[],'streamlines',[]); % analysis from frame-by-frame data
+        imageType % image appearance ('fluorescence', 'brightfield', or 'darkfield')
     end
     properties (Dependent)
         Distribution % distribution of particles in video
@@ -185,11 +186,24 @@ classdef videoMaker
             video = videoMaker.openVideo(obj);
             estFrames = ceil(video.Duration*video.FrameRate);
             
+            %---------------------------------------------------------------
+            %         Step 1 Initialize frames
+            %---------------------------------------------------------------
             progress = waitbar(0,'initializing frames');
-            currentFrame = videoFrame(readFrame(video), obj.rect, 0, obj.forType{:});
+            firstImage = readFrame(video);
+            
+            if isempty(obj.imageType)
+                obj.imageType = videoMaker.determineImageType(firstImage);
+            end
+            
+            currentFrame = videoFrame(firstImage, obj.rect, 0, obj.forType{:}, obj.imageType);
             frames(estFrames) = clean(currentFrame);
             frames = fliplr(frames);
-            Nr = 2; timeRem = nan(1,estFrames);
+            
+            %---------------------------------------------------------------
+            %         Step 2 Continue for all frames
+            %---------------------------------------------------------------
+            Nr = 2; timeRem = nan(1,100);
             while hasFrame(video) && video.CurrentTime < video.Duration*1.05
                 tic % start clock
                 currentTime = video.CurrentTime;
@@ -197,11 +211,11 @@ classdef videoMaker
                     ['analyzing frame ',num2str(Nr),' of ',num2str(estFrames),...
                     ' (time rem: ',num2str(round((estFrames-Nr)*nanmean(timeRem)/60)),'min)']);
                 
-                currentFrame = videoFrame(readFrame(video), obj.rect, currentTime, obj.forType{:});
+                currentFrame = videoFrame(readFrame(video), obj.rect, currentTime, obj.forType{:}, obj.imageType);
                 frames(Nr) = clean(currentFrame);
                 
                 Nr = Nr +1;
-                timeRem(Nr) = toc;
+                timeRem(rem(Nr,100)+1) = toc;
             end
             
             delete(progress)
@@ -210,6 +224,9 @@ classdef videoMaker
             % Setup frame analysis
             implementedTypes = {'circle'};
             obj.forType = implementedTypes(ismember(implementedTypes,lower(varargin)));
+            
+            implementedImageTypes = {'fluorescence', 'brightfield', 'darkfield'};
+            obj.imageType = implementedTypes(ismember(implementedImageTypes,lower(varargin)));
             
             % Setup analysis
             implementedAnalysis = {'tracking','distribution','streamlines'};
@@ -269,6 +286,7 @@ classdef videoMaker
             particlePositions = cell2mat(reshape(frameData,[],1));
             
             % track particle positions
+            addPath('tracking');
             res = track(particlePositions,10);
             uniqueTracks = unique(res(:,4));
             tracks = arrayfun(@(n)struct('x',res(res(:,4) == n,1),'y',res(res(:,4) == n,2),'time',res(res(:,4) == n,3)),uniqueTracks);
@@ -368,6 +386,29 @@ classdef videoMaker
         function plotDistribution(obj,ax) %WRITE
         end
         function plotRegions(obj,ax) %WRITE
+        end
+        function type = determineImageType(Im)
+            if nargin < 1
+                type = []; return
+            elseif size(Im,3) > 1
+                Im = rgb2gray(Im);
+            end
+            
+            binaryIm = imbinarize(Im);
+            binaryImComplement = imcomplement(binaryIm);
+            binaryImBackground = imfill(binaryIm,'holes');
+            binaryImComplementBackground = imfill(binaryImComplement,'holes');
+            
+            ImVariation = std(binaryImBackground(:));
+            ImComplementVariation = std(binaryImComplementBackground(:));
+            
+            if round(ImVariation - ImComplementVariation,2) < 0.025
+                type = 'brightfield';
+            elseif ImVariation < ImComplementVariation
+                type = 'darkfield'; % not sure about this one
+            else
+                type = 'fluorescence';
+            end
         end
     end
 end

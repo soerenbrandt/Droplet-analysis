@@ -65,17 +65,17 @@ classdef videoFrame
 %                 return
 %             end
             
-            if nargin < 2
+            if nargin < 2 || isempty(ax)
                 ax = axes(figure);
                 imshow(obj.Image)
             end
             
             % CHANGE if varargin specifies anything, else plot first item
-            hold(ax,'on')
-            analysisFor = fieldnames(obj.analysis);
             if isempty(obj.analysis)
                 return
             else
+                hold(ax,'on')
+                analysisFor = fieldnames(obj.analysis);
                 switch analysisFor{1}
                     case 'circle'
                         if any(cellfun(@(str)strcmp(str,'noOutline'),varargin))
@@ -92,7 +92,11 @@ classdef videoFrame
         function analysis = runAnalysis(obj,type)
             switch type
                 case 'circle'
-                    analysis = detectDroplets(obj);
+                    if strcmp(obj.type,'brightfield')
+                        analysis = detectBrightfieldDroplets(obj);
+                    else
+                        analysis = detectDroplets(obj);
+                    end
                 otherwise
                     analysis = [];
                     return
@@ -155,19 +159,19 @@ classdef videoFrame
                 
                 currentIndex = max([find(radii(~isnan(radii)),1,'last'),0])+1;
                 
-                for n = 1:numel(R)
-                    overlap = (C(n,1) - centers(:,1)).^2 + (C(n,2) - centers(:,2)).^2 < radii.^2;
+                for m = 1:numel(R)
+                    overlap = (C(m,1) - centers(:,1)).^2 + (C(m,2) - centers(:,2)).^2 < radii.^2;
                     
                     if any(overlap)
                         % replace better fits
-                        centers(overlap & metric < M(n),:) = repmat(C(n,:),sum(overlap & metric < M(n)),1);
-                        radii(overlap & metric < M(n),:) = R(n);
-                        metric(overlap & metric < M(n),:) = M(n);
+                        centers(overlap & metric < M(m),:) = repmat(C(m,:),sum(overlap & metric < M(m)),1);
+                        radii(overlap & metric < M(m),:) = R(m);
+                        metric(overlap & metric < M(m),:) = M(m);
                     else
                         % add new circle
-                        centers(currentIndex,:) = C(n,:);
-                        radii(currentIndex) = R(n);
-                        metric(currentIndex) = M(n);
+                        centers(currentIndex,:) = C(m,:);
+                        radii(currentIndex) = R(m);
+                        metric(currentIndex) = M(m);
                         currentIndex = currentIndex + 1;
                     end
                 end
@@ -181,6 +185,19 @@ classdef videoFrame
             analysis = struct('for','circles',...
                         'centers',results(~isnan(results(:,3)),1:2),...
                         'radii',results(~isnan(results(:,3)),3));
+        end
+        function analysis = detectBrightfieldDroplets(obj)
+            A = imbinarize(imcomplement(obj.Image)); % binarize the inverse brightfield image
+            B = imfill(A,'holes'); % fill any fully enclosed white regions
+            C = B; C(A) = 0; % remove outlines of said regions
+            stats = regionprops(C, obj.Image, 'Area','WeightedCentroid','Eccentricity','MajorAxisLength','MinorAxisLength');
+            stats([stats.Eccentricity] >= 0.75) = [];
+            D = xor(bwareaopen(A,1), bwareaopen(A,10*max([stats.Area]))); % isolate dark droplet rim in original image
+            d = bwdist(imcomplement(D)); d = median(d(d>0)); % d is the half-width of the dark rim of the droplet
+            
+            analysis = struct('for','circles',...
+                        'centers',vertcat(stats.WeightedCentroid),...
+                        'radii',mean([vertcat(stats.MajorAxisLength),vertcat(stats.MinorAxisLength)]/2,2) +2*d);
         end
         function stats = approximateFrameProperties(obj,varargin) % WORK IN PROGRESS (TOO SLOW)
             A = obj.Image;
