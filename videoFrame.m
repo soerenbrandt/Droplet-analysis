@@ -1,5 +1,5 @@
 classdef videoFrame
-    % Comes with VittoPowerAnalysisV2 to interpret droplet shape and size
+    % Comes with videoMaker to analyze droplets moving in image sequence
     properties
         % might not be worth it... stats % regionprops of the image after image processing
         analysis % results based on shape request
