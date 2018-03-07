@@ -102,7 +102,7 @@ classdef videoFrame
                     return
             end
         end
-        function report = report(obj,type)
+        function report = reportData(obj,type)
             analysisFor = fieldnames(obj.analysis);
             if nargin < 2
                 type = analysisFor{1};
@@ -110,8 +110,19 @@ classdef videoFrame
                 report = []; return
             end
             
-            report = obj.analysis.(type).centers;
-            report(:,3) = obj.time;
+            report = [obj.analysis.(type).centers, obj.analysis.(type).radii];
+            report(:,4) = obj.time;
+        end
+        function positions = positions(obj,type)
+            analysisFor = fieldnames(obj.analysis);
+            if nargin < 2
+                type = analysisFor{1};
+            elseif ~ismember(analysisFor, type)
+                positions = []; return
+            end
+            
+            positions = obj.analysis.(type).centers;
+            positions(:,3) = obj.time;
         end
 	end
     methods (Hidden = true)

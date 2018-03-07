@@ -24,6 +24,7 @@ classdef videoMaker
         imageType % image appearance ('fluorescence', 'brightfield', or 'darkfield')
     end
     properties (Dependent)
+        Objects % objects found in image analysis
         Distribution % distribution of particles in video
     end
     properties (SetAccess = protected)
@@ -52,6 +53,11 @@ classdef videoMaker
             else
                 obj.videoLink = videoLink;
             end
+            if isempty(varargin)
+                varargin = {'rect','circle','tracking'}; % standard operations
+            elseif ~any(ismember({'circle'},lower(varargin)))
+                varargin{end+1} = 'circle';
+            end
             
             %---------------------------------------------------------------
             %         Step 2 Set analysis variables
@@ -73,12 +79,14 @@ classdef videoMaker
             %---------------------------------------------------------------
             %         Step 1 Set analysis variables
             %---------------------------------------------------------------
-            obj = setupVideoAnalysisFor(obj,varargin);
+            obj = setupVideoAnalysisFor(obj,varargin{:});
             
             %---------------------------------------------------------------
             %         Step 2 Analyse frames
             %---------------------------------------------------------------
-            obj.frames = analyseFrames(obj);
+            if ~isempty(obj.forType)
+                obj.frames = analyseFrames(obj);
+            end
             
             %---------------------------------------------------------------
             %         Step 3 Analyse video
@@ -99,7 +107,7 @@ classdef videoMaker
                     return
             end
         end
-        function makeVideo(obj,varargin)
+        function makeVideo(obj,varargin) % UPDATE, quick makeVideo, and pretty makeVideo + 
             progress = waitbar(0,'checking analysis');
             %---------------------------------------------------------------
             %         Step 1 Check for requested elements
@@ -180,6 +188,26 @@ classdef videoMaker
         end % FINISH
         function makeCVS(obj,varargin) %WRITE
         end
+        function objects = get.Objects(obj)
+            if ~isfield(obj.analysis,'tracking')
+                objects = [];
+                return
+            end
+            
+            % Reorient data for tracking
+            frameData = arrayfun(@(n)reportData(obj.frames(n)),1:numel(obj.frames),'uni',0);
+            frameData = cellfun(@(x,y)[x repmat(y,size(x,1),1)],frameData,num2cell(1:numel(frameData)),'uni',0);
+            particlePositions = cell2mat(reshape(frameData,[],1));
+            
+            % Retrieve particle tracking data and sort
+            particleTracks = obj.analysis.tracking;
+            particleIDs = sortrows(particleTracks,[3 1 2]);
+            
+            particles = splitapply(@(x){x},particlePositions,particleIDs(:,4));
+            
+            objects = cellfun(@(P)struct('size',P(:,3),'position',P(:,[1,2]),...
+                                           'atTime',P(:,4),'inFrame',P(:,5)),particles);
+        end
 	end
     methods (Hidden = true)
         function frames = analyseFrames(obj)
@@ -226,7 +254,7 @@ classdef videoMaker
             obj.forType = implementedTypes(ismember(implementedTypes,lower(varargin)));
             
             implementedImageTypes = {'fluorescence', 'brightfield', 'darkfield'};
-            obj.imageType = implementedTypes(ismember(implementedImageTypes,lower(varargin)));
+            obj.imageType = [implementedImageTypes{ismember(implementedImageTypes,lower(varargin))}];
             
             % Setup analysis
             implementedAnalysis = {'tracking','distribution','streamlines'};
@@ -276,24 +304,24 @@ classdef videoMaker
             %---------------------------------------------------------------
             analysis = obj.analysis;
             for n = 1:numel(obj.forAnalysis)
-                of = obj.forAnalysis(n);
+                of = obj.forAnalysis{n};
                 analysis.(of) = runAnalysis(obj,of);
             end
         end
         function analysis = trackParticles(obj)
             % Reorient data for tracking
-            frameData = arrayfun(@(n)report(obj.frames(n)),1:numel(obj.frames),'uni',0);
+            frameData = arrayfun(@(n)positions(obj.frames(n)),1:numel(obj.frames),'uni',0);
             particlePositions = cell2mat(reshape(frameData,[],1));
             
             % track particle positions
-            addPath('tracking');
-            res = track(particlePositions,10);
-            uniqueTracks = unique(res(:,4));
-            tracks = arrayfun(@(n)struct('x',res(res(:,4) == n,1),'y',res(res(:,4) == n,2),'time',res(res(:,4) == n,3)),uniqueTracks);
+            % addPath('tracking');
+            analysis = track(particlePositions,10);
+            %uniqueTracks = unique(res(:,4));
+            %tracks = arrayfun(@(n)struct('x',res(res(:,4) == n,1),'y',res(res(:,4) == n,2),'time',res(res(:,4) == n,3)),uniqueTracks);
             
             % return analysis
-            analysis = struct('for','tracking',...
-                        'tracks',tracks);
+            %analysis = struct('for','tracking',...
+                        %'tracks',tracks);
         end % WRITE
         function obj = sizeDistributions(obj) % WRITE include regions
         end
@@ -323,13 +351,17 @@ classdef videoMaker
             end
             
             % Plot tracking results into axis handle
-            current = cellfun(@(x)any(x < time & x > time-trail),{obj.analysis.tracking.tracks.time});
-            times = {obj.analysis.tracking.tracks(current).time};
-            tracks = [{obj.analysis.tracking.tracks(current).x};{obj.analysis.tracking.tracks(current).y}];
-            for n = 1:sum(current)
-                remove = times{n} >= time | times{n} <= time-trail;
-                tracks{1,n}(remove) = []; tracks{2,n}(remove) = [];
-            end
+            trackingResults = obj.analysis.tracking;
+            current = trackingResults(time > trackingResults(:,3) & trackingResults(:,3) > time-trail,:);
+            tracks = splitapply(@(x){x},current(:,[1,2]),current(:,4));
+            
+%             current = cellfun(@(x)any(x < time & x > time-trail),{obj.analysis.tracking.tracks.time});
+%             times = {obj.analysis.tracking.tracks(current).time};
+%             tracks = [{obj.analysis.tracking.tracks(current).x};{obj.analysis.tracking.tracks(current).y}];
+%             for n = 1:sum(current)
+%                 remove = times{n} >= time | times{n} <= time-trail;
+%                 tracks{1,n}(remove) = []; tracks{2,n}(remove) = [];
+%             end
             if ~isempty(tracks)
                 hold(ax,'on')
                 plot(ax,tracks{:},'Color','w')
@@ -356,14 +388,19 @@ classdef videoMaker
             end
             
             % Plot tracking results into axis handle
-            current = cellfun(@(x)any(x < time & x > time-trail),{obj.analysis.tracking.tracks.time});
-            times = {obj.analysis.tracking.tracks(current).time};
-            tracks = {obj.analysis.tracking.tracks(current).x; obj.analysis.tracking.tracks(current).y};
-            for n = 1:sum(current)
-                remove = times{n} >= time | times{n} <= time-trail;
-                tracks{1,n}(remove) = []; tracks{2,n}(remove) = [];
-            end
-            trackPoints = arrayfun(@(n)unique(round(horzcat(tracks{1:2,n})),'rows'),1:size(tracks,2),'uni',0);
+            trackingResults = obj.analysis.tracking;
+            current = trackingResults(time > trackingResults(:,3) & trackingResults(:,3) > time-trail,:);
+            trackPoints = splitapply(@(x){round(x)},current(:,[1,2]),current(:,4));
+            
+%             current = cellfun(@(x)any(x < time & x > time-trail),{obj.analysis.tracking.tracks.time});
+%             times = {obj.analysis.tracking.tracks(current).time};
+%             tracks = {obj.analysis.tracking.tracks(current).x; obj.analysis.tracking.tracks(current).y};
+%             for n = 1:sum(current)
+%                 remove = times{n} >= time | times{n} <= time-trail;
+%                 tracks{1,n}(remove) = []; tracks{2,n}(remove) = [];
+%             end
+            
+            % trackPoints = arrayfun(@(n)unique(round(horzcat(tracks{1:2,n})),'rows'),1:size(tracks,2),'uni',0);
             trackDiffs = cellfun(@(x)max(abs(diff(x,1,1))+1,[],2),trackPoints,'uni',0);
             for m = find(cellfun(@(x)any(x > 2),trackDiffs)) %1:size(trackDiffs,2)
                 addPoints = trackDiffs{m} > 2; nrOfPoints = trackDiffs{m}(addPoints);
