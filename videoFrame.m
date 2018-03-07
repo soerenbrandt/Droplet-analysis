@@ -1,4 +1,5 @@
 classdef videoFrame
+    % videoFrame V1.1
     % Comes with videoMaker to analyze droplets moving in image sequence
     properties
         % might not be worth it... stats % regionprops of the image after image processing

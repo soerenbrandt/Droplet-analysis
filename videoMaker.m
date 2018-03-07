@@ -1,4 +1,5 @@
 classdef videoMaker
+    % videoMaker V1.1
     % Analysis of objects in video and returns data or video with
     % respective features and analysis.
     %
@@ -92,7 +93,7 @@ classdef videoMaker
             %         Step 3 Analyse video
             %---------------------------------------------------------------
             obj.analysis = analyseVideo(obj);
-        end
+        end % check which analysis has been done and redo (make different from runAnalysis
         function save(obj)
             [path,name] = fileparts(obj.videoLink);
             

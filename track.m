@@ -173,6 +173,9 @@ function tracks = track(xyzs,maxdisp,param)
 % ;
 % ;-
 
+% modification to original: set default tracks output 
+tracks = [xyzs, (1:size(xyzs,1))'];
+
 dd = length(xyzs(1,:));
 
 %use default parameters if none given
