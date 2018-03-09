@@ -1,5 +1,8 @@
 classdef videoFrame
-    % videoFrame V1.1
+    % videoFrame V1.2
+    % minor changes to detectBrightfieldDroplets, adding threshold and
+    % adding rescaling of image
+    
     % Comes with videoMaker to analyze droplets moving in image sequence
     properties
         % might not be worth it... stats % regionprops of the image after image processing
@@ -14,6 +17,7 @@ classdef videoFrame
         type % Image type (fluorescence or brightfield)
         rect % Image rectangle
         Image % original image given
+        rescaled % true if image was rescaled for analysis (by 2x)
     end
     
     methods
@@ -27,7 +31,12 @@ classdef videoFrame
             
             if nargin > 1 && ~isempty(rect)
                 obj.rect = rect;
-                Im = imcrop(Im,rect);
+                if any(cellfun(@(str)strcmp(str,'rescale'),varargin))
+                    obj.rescaled = true;
+                    Im = imcrop(imresize(Im,2),[2*rect(1) 2*rect(2)+rect(4)/2 rect(3)*2 rect(4)]);
+                else
+                    Im = imcrop(Im,rect);
+                end
             end
             if nargin > 2
                 obj.time = time;
@@ -111,7 +120,11 @@ classdef videoFrame
                 report = []; return
             end
             
-            report = [obj.analysis.(type).centers, obj.analysis.(type).radii];
+            if obj.rescaled
+                report = [(obj.analysis.(type).centers(:,1) + obj.rect(1))/2, (obj.analysis.(type).centers(:,2) + obj.rect(2))/2 obj.analysis.(type).radii/2];
+            else
+                report = [obj.analysis.(type).centers, obj.analysis.(type).radii];
+            end
             report(:,4) = obj.time;
         end
         function positions = positions(obj,type)
@@ -122,7 +135,11 @@ classdef videoFrame
                 positions = []; return
             end
             
-            positions = obj.analysis.(type).centers;
+            if obj.rescaled
+                positions = [(obj.analysis.(type).centers(:,1) + obj.rect(1))/2, (obj.analysis.(type).centers(:,2) + obj.rect(2))/2];
+            else
+                positions = obj.analysis.(type).centers;
+            end
             positions(:,3) = obj.time;
         end
 	end
@@ -146,7 +163,11 @@ classdef videoFrame
 %             end
             
             %images{1} = obj.Image; images{2} = imresize(obj.Image,2);
-            rescale = table([0.93; 0.93; 0.93],[10 30;4 10;1 4],'VariableNames',{'Scale','inRange'});
+            if obj.rescaled
+                rescale = table([0.93; 0.93; 0.93; 0.93],[60 30;10 30;4 10;1 4],'VariableNames',{'Scale','inRange'});
+            else
+                rescale = table([0.93; 0.93; 0.93],[10 30;4 10;1 4],'VariableNames',{'Scale','inRange'});
+            end
             
             %---------------------------------------------------------------
             %         Step 1 Set radius relations (Deprecated: Approximate radii from stats)
@@ -199,7 +220,8 @@ classdef videoFrame
                         'radii',results(~isnan(results(:,3)),3));
         end
         function analysis = detectBrightfieldDroplets(obj)
-            A = imbinarize(imcomplement(obj.Image)); % binarize the inverse brightfield image
+            thresh = double(max(obj.Image(:)) - min(obj.Image(:)))/255 +0.1;
+            A = imbinarize(imcomplement(obj.Image),thresh); %0.7); % binarize the inverse brightfield image
             B = imfill(A,'holes'); % fill any fully enclosed white regions
             C = B; C(A) = 0; % remove outlines of said regions
             stats = regionprops(C, obj.Image, 'Area','WeightedCentroid','Eccentricity','MajorAxisLength','MinorAxisLength');

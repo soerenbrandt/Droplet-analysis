@@ -1,6 +1,14 @@
 classdef videoMaker
-    % videoMaker V1.1
-    % Analysis of objects in video and returns data or video with
+    % videoMaker V1.2
+    % adding image rescaling and improving droplet finder in general,
+    % including clearFeatures to remove general shape of membrane channel
+    % in brightfield images
+    % added image reporting during analysis with show: <number>
+    % changed particle Tracking to limit displacement to median radius of
+    % particles
+    % improved accuracy of image type detection
+    
+    % Analyses objects in video and returns data or video with
     % respective features and analysis.
     %
     % Object detection (based on videoFrame class) includes
@@ -33,6 +41,7 @@ classdef videoMaker
         forAnalysis % analysis methods performed
         rect % rectangle to crop the video
         regions % relevant regions in image
+        options % additional parameters set for analysis and image processing
     end
     properties (SetAccess = immutable)
         date % creation date of the video file
@@ -55,7 +64,7 @@ classdef videoMaker
                 obj.videoLink = videoLink;
             end
             if isempty(varargin)
-                varargin = {'rect','circle','tracking'}; % standard operations
+                varargin = {'rescale','circle','tracking','show: 500'}; % standard operations
             elseif ~any(ismember({'circle'},lower(varargin)))
                 varargin{end+1} = 'circle';
             end
@@ -214,18 +223,39 @@ classdef videoMaker
         function frames = analyseFrames(obj)
             video = videoMaker.openVideo(obj);
             estFrames = ceil(video.Duration*video.FrameRate);
+            if any(contains(obj.options,{'show:'},'IgnoreCase',true))
+                showFreq = str2double(cell2mat(...
+                    regexp(obj.options{contains(obj.options,{'show:'},'IgnoreCase',true)},'\d*','Match')));
+            else
+                showFreq = inf;
+            end
             
             %---------------------------------------------------------------
             %         Step 1 Initialize frames
             %---------------------------------------------------------------
             progress = waitbar(0,'initializing frames');
             firstImage = readFrame(video);
+            clearFeatures = false(size(firstImage)); maxBrightness = max(max(rgb2gray(firstImage)));
             
             if isempty(obj.imageType)
                 obj.imageType = videoMaker.determineImageType(firstImage);
             end
+            if strcmp(obj.imageType,'brightfield')
+                % Pick 5 images throughout the video and multiply binarized
+                % image complement
+                clearFeatures = true(size(firstImage,1),size(firstImage,2));
+                for n = 1:5
+                    video.currentTime = video.Duration*n/6;
+                    clearFeatures = clearFeatures.*imbinarize(imcomplement(rgb2gray(readFrame(video))));
+                end
+                clearFeatures = repmat(bwareafilt(logical(clearFeatures),1),1,1,size(firstImage,3));
+                
+                % Reset video to second frame
+                video.currentTime = 0; readFrame(video);
+                firstImage(clearFeatures) = maxBrightness;
+            end
             
-            currentFrame = videoFrame(firstImage, obj.rect, 0, obj.forType{:}, obj.imageType);
+            currentFrame = videoFrame(firstImage, obj.rect, 0, obj.forType{:}, obj.imageType, obj.options{:});
             frames(estFrames) = clean(currentFrame);
             frames = fliplr(frames);
             
@@ -240,8 +270,15 @@ classdef videoMaker
                     ['analyzing frame ',num2str(Nr),' of ',num2str(estFrames),...
                     ' (time rem: ',num2str(round((estFrames-Nr)*nanmean(timeRem)/60)),'min)']);
                 
-                currentFrame = videoFrame(readFrame(video), obj.rect, currentTime, obj.forType{:}, obj.imageType);
+                currentImage = readFrame(video);
+                currentImage(clearFeatures) = maxBrightness;
+                
+                currentFrame = videoFrame(currentImage, obj.rect, currentTime, obj.forType{:}, obj.imageType, obj.options{:});
                 frames(Nr) = clean(currentFrame);
+                
+                if rem(Nr,showFreq) == 0
+                  plot(currentFrame);
+                end
                 
                 Nr = Nr +1;
                 timeRem(rem(Nr,100)+1) = toc;
@@ -262,7 +299,7 @@ classdef videoMaker
             obj.forAnalysis = implementedAnalysis(ismember(implementedAnalysis,lower(varargin)));
             
             % Setup rectangle
-            if any(strcmpi(varargin,'rect'))
+            if any(ismember(varargin,{'rect', 'rescale'}))
                 v = videoMaker.openVideo(obj);
                 v.CurrentTime = v.Duration/2;
                 
@@ -293,6 +330,10 @@ classdef videoMaker
                     end
                 end
             end
+            
+            % Return remainder of varargin as options
+            lookFor = [implementedTypes, implementedImageTypes, implementedAnalysis, {'rect', 'regions'}];
+            obj.options = varargin(~ismember(varargin,lookFor));
         end
         function analysis = analyseVideo(obj)
             %---------------------------------------------------------------
@@ -311,12 +352,12 @@ classdef videoMaker
         end
         function analysis = trackParticles(obj)
             % Reorient data for tracking
-            frameData = arrayfun(@(n)positions(obj.frames(n)),1:numel(obj.frames),'uni',0);
+            frameData = arrayfun(@(n)reportData(obj.frames(n)),1:numel(obj.frames),'uni',0);
             particlePositions = cell2mat(reshape(frameData,[],1));
             
             % track particle positions
             % addPath('tracking');
-            analysis = track(particlePositions,10);
+            analysis = track(particlePositions(:,[1 2 4]),median(particlePositions(:,3)));
             %uniqueTracks = unique(res(:,4));
             %tracks = arrayfun(@(n)struct('x',res(res(:,4) == n,1),'y',res(res(:,4) == n,2),'time',res(res(:,4) == n,3)),uniqueTracks);
             
@@ -433,16 +474,22 @@ classdef videoMaker
             end
             
             binaryIm = imbinarize(Im);
-            binaryImComplement = imcomplement(binaryIm);
-            binaryImBackground = imfill(binaryIm,'holes');
-            binaryImComplementBackground = imfill(binaryImComplement,'holes');
+            ImROI = bwpropfilt(binaryIm,'Eccentricity',[0 0.5]);
+            binaryImROI = bwconvhull(ImROI); %regionprops(ImROI,'BoundingBox'); binaryImROI = binaryImROI.BoundingBox;
             
-            ImVariation = std(binaryImBackground(:));
-            ImComplementVariation = std(binaryImComplementBackground(:));
+            inROI = mean(mean(binaryIm(ImROI)));
+            outsideROI = mean(mean(binaryIm(~ImROI & binaryImROI)));
             
-            if round(ImVariation - ImComplementVariation,2) < 0.025
+%             binaryImComplement = imcomplement(binaryIm);
+%             binaryImBackground = imfill(edge(binaryIm),'holes');
+%             binaryImComplementBackground = imfill(edge(binaryImComplement),'holes');
+%             
+%             ImVariation = std(binaryImBackground(:));
+%             ImComplementVariation = std(binaryImComplementBackground(:));
+            
+            if round(abs(inROI - outsideROI),1) < 0.5
                 type = 'brightfield';
-            elseif ImVariation < ImComplementVariation
+            elseif inROI < outsideROI
                 type = 'darkfield'; % not sure about this one
             else
                 type = 'fluorescence';
