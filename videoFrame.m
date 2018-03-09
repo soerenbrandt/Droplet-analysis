@@ -164,7 +164,7 @@ classdef videoFrame
             
             %images{1} = obj.Image; images{2} = imresize(obj.Image,2);
             if obj.rescaled
-                rescale = table([0.93; 0.93; 0.93; 0.93],[60 30;10 30;4 10;1 4],'VariableNames',{'Scale','inRange'});
+                rescale = table([0.93; 0.93; 0.93; 0.93],[30 60;10 30;4 10;1 4],'VariableNames',{'Scale','inRange'});
             else
                 rescale = table([0.93; 0.93; 0.93],[10 30;4 10;1 4],'VariableNames',{'Scale','inRange'});
             end
