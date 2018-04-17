@@ -1,12 +1,14 @@
 classdef videoMaker
-    % videoMaker V1.2
-    % adding image rescaling and improving droplet finder in general,
-    % including clearFeatures to remove general shape of membrane channel
-    % in brightfield images
-    % added image reporting during analysis with show: <number>
-    % changed particle Tracking to limit displacement to median radius of
-    % particles
-    % improved accuracy of image type detection
+    % videoMaker V1.3
+    % added objectsByRegion method to filter objects
+    % updated structure of videoMaker functions to more appropriatly
+    % represent their use
+    % added scatterDistribution and consolidated setupRegions into function
+    % added scale functionality
+    % IMPORTANT: add listener/event to make previous analysis backwards
+    % compatible
+    % added plotDistribution
+    % added video preparation for odyssee
     
     % Analyses objects in video and returns data or video with
     % respective features and analysis.
@@ -42,13 +44,22 @@ classdef videoMaker
         rect % rectangle to crop the video
         regions % relevant regions in image
         options % additional parameters set for analysis and image processing
+        scale % for converting pixel units to physical units (factor in um/pixel, depth in um)
     end
     properties (SetAccess = immutable)
         date % creation date of the video file
     end
     
+    %% Methids
     methods
+        % Video analysis functions
         function obj = videoMaker(videoLink,varargin) %WRITE
+            % Creates videoMaker object from brightfield or fluorescence
+            % videos. Varargin can be used to define a custom sequence of
+            % analysis tools, including 'circle', 'tracking', and 'Show:
+            % <per number of frames>'. Default is varargin =
+            % {'rescale','circle','tracking','show: 500'}.
+            
             %---------------------------------------------------------------
             %         Step 1 Set default variables
             %---------------------------------------------------------------
@@ -63,29 +74,38 @@ classdef videoMaker
             else
                 obj.videoLink = videoLink;
             end
-            if isempty(varargin)
+            
+            if any(cellfun(@(str)strcmp(str,'odyssee'),lower(varargin)))
+                obj = obj.setupVideoAnalysisFor(varargin{:}, 'full');
+                obj.prepareForOdyssee;
+                return
+            elseif isempty(varargin)
                 varargin = {'rescale','circle','tracking','show: 500'}; % standard operations
-            elseif ~any(ismember({'circle'},lower(varargin)))
+            elseif ~any(ismember({'circle','full'},lower(varargin)))
                 varargin{end+1} = 'circle';
             end
             
             %---------------------------------------------------------------
             %         Step 2 Set analysis variables
             %---------------------------------------------------------------
-            obj = setupVideoAnalysisFor(obj,varargin{:});
+            obj = obj.setupVideoAnalysisFor(varargin{:});
             
             %---------------------------------------------------------------
             %         Step 3 Analyse frames
             %---------------------------------------------------------------
-            obj.frames = analyseFrames(obj);
+            obj.frames = obj.analyseFrames;
             
             %---------------------------------------------------------------
             %         Step 4 Analyse video
             %---------------------------------------------------------------
-            obj.analysis = analyseVideo(obj);
-            
+            obj.analysis = obj.analyseVideo;
         end
         function obj = redoAnalysis(obj,varargin)
+            % Repeat initial analysis or analysis specified in varargin
+            if isempty(varargin)
+                varargin = [obj.forType, obj.forAnalysis, obj.options, {obj.imageType}];
+            end
+            
             %---------------------------------------------------------------
             %         Step 1 Set analysis variables
             %---------------------------------------------------------------
@@ -103,11 +123,6 @@ classdef videoMaker
             %---------------------------------------------------------------
             obj.analysis = analyseVideo(obj);
         end % check which analysis has been done and redo (make different from runAnalysis
-        function save(obj)
-            [path,name] = fileparts(obj.videoLink);
-            
-            save([path,'/',name,'.mat'],'obj')
-        end
         function analysis = runAnalysis(obj,of)
             switch of
                 case 'tracking'
@@ -117,6 +132,8 @@ classdef videoMaker
                     return
             end
         end
+        
+        % Storage and output functions
         function makeVideo(obj,varargin) % UPDATE, quick makeVideo, and pretty makeVideo + 
             progress = waitbar(0,'checking analysis');
             %---------------------------------------------------------------
@@ -131,7 +148,7 @@ classdef videoMaker
             %         Step 2 Make video
             %---------------------------------------------------------------
             waitbar(0,progress,'locating video');
-            video = videoMaker.openVideo(obj);
+            video = obj.openVideo;
             
             % function [ax,fig] = makeFrame(video,obj,frameInd)
                 %time = video.CurrentTime;
@@ -198,6 +215,148 @@ classdef videoMaker
         end % FINISH
         function makeCVS(obj,varargin) %WRITE
         end
+        function save(obj,path)
+            if nargin < 2 || isempty(path)
+                [path,name] = fileparts(obj.videoLink);
+            else
+                [~,name] = fileparts(obj.videoLink);
+            end
+            
+            save([path,'/',name,'.mat'],'obj')
+        end
+        
+        % Data access functions
+        function inRegion = objectsInRegion(obj,varargin)
+            if isempty(obj.regions)
+                obj = obj.setupRegions;
+            end
+            
+            if isempty(varargin)
+                regionIDs = 1:numel(obj.regions);
+            else
+                regionIDs = varargin{1};
+            end
+            
+            objects = obj.Objects;
+            
+            % filter objects based on location of droplets
+            inRegion = cell(size(regionIDs));
+            for n = regionIDs
+                if isempty(obj.rect)
+                    regionXs = obj.regions{n}(1:end/2); regionYs = obj.regions{n}(1+end/2:end);
+                else
+                    regionXs = obj.regions{n}(1:end/2) - obj.rect(1); regionYs = obj.regions{n}(1+end/2:end) - obj.rect(2);
+                end
+                inRegion{n} = objects(cellfun(@(pos)any(inpolygon(pos(:,1),pos(:,2),regionXs,regionYs)),{objects.position}));
+            end
+        end
+        function s = scatterDistribution(obj,ax,at,varargin)
+            if isempty(obj.regions)
+                obj = obj.setupRegions;
+            end
+            if nargin < 3 || isempty(at)
+                at = xlim(ax); at = at(2);
+            end
+            if ismember('volume',varargin(cellfun(@(c)isa(c,'char'),varargin)))
+                param = 'volume';
+            else
+                param = 'size';
+            end
+            
+            if isempty(varargin(cellfun(@(c)isa(c,'numeric'),varargin)))
+                regionIDs = 1:numel(obj.regions);
+            else
+                regionIDs = varargin{1};
+            end
+            
+            if isempty(regionIDs)
+                return
+            else
+                objects = obj.Objects;
+            end
+            
+            if nargin < 2 || isempty(ax)
+                ax = axes(figure);
+                colormap(ax,flipud(bone))
+            end
+            
+            % filter objects based on location of droplets
+            hold(ax,'on')
+            for n = regionIDs
+                if isempty(obj.rect)
+                    regionXs = obj.regions{n}(1:2:end-1); regionYs = obj.regions{n}(2:2:end);
+                else
+                    regionXs = obj.regions{n}(1:2:end-1) - obj.rect(1); regionYs = obj.regions{n}(2:2:end) - obj.rect(2);
+                end
+                inRegion = objects(cellfun(@(pos)any(inpolygon(pos(:,1),pos(:,2),regionXs,regionYs)),{objects.position}));
+                
+                meanParam = arrayfun(@(obj)mean(obj.(param)),inRegion(arrayfun(@(obj)length(obj.(param)),inRegion)>2));
+                [values, edges] = histcounts(meanParam,100,'Normalization','Probability');
+                s = scatter(ax,at*ones(size(values)),edges(2:end),[],values,'filled');
+            end
+            hold(ax,'off')
+        end
+        function h = plotDistribution(obj,ax,varargin)
+            if isempty(obj.regions)
+                obj = obj.setupRegions;
+            end
+            if ismember('volume',varargin(cellfun(@(c)isa(c,'char'),varargin)))
+                param = 'volume';
+            else
+                param = 'size';
+            end
+            
+            if isempty(varargin(cellfun(@(c)isa(c,'numeric'),varargin)))
+                regionIDs = 1:numel(obj.regions);
+            else
+                regionIDs = varargin{1};
+            end
+            
+            if isempty(regionIDs)
+                return
+            else
+                objects = obj.Objects;
+            end
+            
+            if nargin < 2 || isempty(ax)
+                ax = axes(figure);
+            end
+            
+            % filter objects based on location of droplets
+            hold(ax,'on')
+            for n = regionIDs
+                if isempty(obj.rect)
+                    regionXs = obj.regions{n}(1:2:end-1); regionYs = obj.regions{n}(2:2:end);
+                else
+                    regionXs = obj.regions{n}(1:2:end-1) - obj.rect(1); regionYs = obj.regions{n}(2:2:end) - obj.rect(2);
+                end
+                inRegion = objects(cellfun(@(pos)any(inpolygon(pos(:,1),pos(:,2),regionXs,regionYs)),{objects.position}));
+                
+                if n == 1 % added for AG1B-5
+                    inRegion(arrayfun(@(obj)mean(obj.size),inRegion)<50) = [];
+                end
+                
+                meanParam = arrayfun(@(obj)mean(obj.(param)),inRegion(arrayfun(@(obj)length(obj.(param)),inRegion)>=1));
+                [values, edges] = histcounts(meanParam,100,'Normalization','Probability','BinLimits',[1,100]);
+                h = plot(ax,edges(2:end),values,'.');
+            end
+            hold(ax,'off')
+        end
+        function h = plotFrame(obj,frameID)
+            if frameID > length(obj.frames)
+                return
+            end
+            v = obj.openVideo;
+            frameToShow = obj.frames(frameID);
+            v.CurrentTime = frameToShow.time;
+            
+            frameData = frameToShow.reportData;
+            centers = frameData(:,1:2) + repmat(obj.rect(1:2),size(frameData,1),1); radii = frameData(:,3);
+            
+            h = axes(figure); imshow(readFrame(v)); viscircles(centers, radii);
+        end
+        
+        % Dependent variable functions
         function objects = get.Objects(obj)
             if ~isfield(obj.analysis,'tracking')
                 objects = [];
@@ -208,20 +367,116 @@ classdef videoMaker
             frameData = arrayfun(@(n)reportData(obj.frames(n)),1:numel(obj.frames),'uni',0);
             frameData = cellfun(@(x,y)[x repmat(y,size(x,1),1)],frameData,num2cell(1:numel(frameData)),'uni',0);
             particlePositions = cell2mat(reshape(frameData,[],1));
+            % particlePositions(:,1:2) = particlePositions(:,1:2) + repmat(obj.rect(1:2),size(particlePositions,1),1);
             
             % Retrieve particle tracking data and sort
             particleTracks = obj.analysis.tracking;
             particleIDs = sortrows(particleTracks,[3 1 2]);
             
             particles = splitapply(@(x){x},particlePositions,particleIDs(:,4));
+            vol = @(r)1e-3*(4/3*pi*r.^3 - 2*(pi/6*max([r-obj.scale.depth/2,zeros(size(r))],[],2).*(3*max([r.^2-(obj.scale.depth/2)^2,zeros(size(r))],[],2)+max([(r-obj.scale.depth/2).^2,zeros(size(r))],[],2))));
             
-            objects = cellfun(@(P)struct('size',P(:,3),'position',P(:,[1,2]),...
+            objects = cellfun(@(P)struct('size',P(:,3)*obj.scale.factor,'position',P(:,[1,2]),...
+                                         'volume', vol(P(:,3)/2*obj.scale.factor),...
                                            'atTime',P(:,4),'inFrame',P(:,5)),particles);
         end
-	end
-    methods (Hidden = true)
+    end
+    %% Hidden methods
+    methods (Hidden = true) 
+        % Video access functions
+        function v = openVideo(obj)
+            try v = VideoReader(obj.videoLink);
+            catch me
+                msgbox({'Error while opening video link:' me.message})
+            end
+        end
+        function obj = prepareForOdyssee(obj)
+            [~, name] = fileparts(obj.videoLink);
+            odysseeFolder = '/Users/Soren/Desktop'; %'/Volumes/homes/home00/sbrandt/Matlab';
+            if ~exist(odysseeFolder,'dir')
+                error('Odyssee folder not found.')
+            end
+            if exist([odysseeFolder,'/',name],'dir')
+                error('Video folder already exists.')
+            else
+                mkdir([odysseeFolder,'/',name]);
+            end
+            
+            video = obj.openVideo;
+            estFrames = ceil(video.Duration*video.FrameRate);
+
+            %---------------------------------------------------------------
+            %         Step 1 Initialize frames
+            %---------------------------------------------------------------
+            if isempty(obj.imageType)
+                obj.imageType = 'fluorescence'; %videoMaker.determineImageType(firstImage);
+            end
+            
+            %---------------------------------------------------------------
+            %         Step 2 Continue for all frames
+            %---------------------------------------------------------------
+            progress = waitbar(0,'initializing frames');
+
+            Nr = 1; timeRem = nan(1,100);
+            while hasFrame(video) && video.CurrentTime < video.Duration*1.05
+                tic % start clock
+                currentTime = video.CurrentTime;
+                waitbar(currentTime/video.Duration,progress,...
+                    ['analyzing frame ',num2str(Nr),' of ',num2str(estFrames),...
+                    ' (time rem: ',num2str(round((estFrames-Nr)*nanmean(timeRem)/60)),'min)']);
+                             
+                currentImage = readFrame(video);
+                
+                imwrite(currentImage,[odysseeFolder,'/',name,'/',num2str(currentTime),'.tif'])
+                
+                Nr = Nr +1;
+                timeRem(rem(Nr,100)+1) = toc;
+            end
+            delete(progress)
+            
+            % save copy to odyssee
+            obj.save([odysseeFolder,'/',name]);
+        end
+        
+        % Video analysis functions
+        function obj = setupVideoAnalysisFor(obj,varargin)
+            % Setup frame analysis
+            implementedTypes = {'circle','full'};
+            obj.forType = implementedTypes(ismember(implementedTypes,lower(varargin)));
+            
+            implementedImageTypes = {'fluorescence', 'brightfield', 'darkfield'};
+            obj.imageType = [implementedImageTypes{ismember(implementedImageTypes,lower(varargin))}];
+            
+            % Setup analysis
+            implementedAnalysis = {'tracking','distribution','streamlines'};
+            obj.forAnalysis = implementedAnalysis(ismember(implementedAnalysis,lower(varargin)));
+            
+            % Setup rectangle
+            if any(ismember(varargin,{'rect', 'rescale'}))
+                v = obj.openVideo;
+                v.CurrentTime = v.Duration/2;
+                
+                h = figure;
+                [~,obj.rect] = imcrop(readFrame(v));
+                delete(h)
+            end
+            
+            % Setup regions
+            if any(strcmpi(varargin,'regions'))
+                obj = obj.setupRegions;
+            end
+            
+            % Setup scale
+            if isempty(obj.scale)
+                obj = obj.setupScale;
+            end
+            
+            % Return remainder of varargin as options
+            lookFor = [implementedTypes, implementedImageTypes, implementedAnalysis, {'rect', 'regions'}];
+            obj.options = varargin(~ismember(varargin,lookFor));
+        end
         function frames = analyseFrames(obj)
-            video = videoMaker.openVideo(obj);
+            video = obj.openVideo;
             estFrames = ceil(video.Duration*video.FrameRate);
             if any(contains(obj.options,{'show:'},'IgnoreCase',true))
                 showFreq = str2double(cell2mat(...
@@ -284,57 +539,61 @@ classdef videoMaker
                 timeRem(rem(Nr,100)+1) = toc;
             end
             
+            % clean out empty frames
+            frames(arrayfun(@(frame)isempty(frame.analysis),frames)) = [];
+            
             delete(progress)
         end
-        function obj = setupVideoAnalysisFor(obj,varargin)
-            % Setup frame analysis
-            implementedTypes = {'circle'};
-            obj.forType = implementedTypes(ismember(implementedTypes,lower(varargin)));
-            
-            implementedImageTypes = {'fluorescence', 'brightfield', 'darkfield'};
-            obj.imageType = [implementedImageTypes{ismember(implementedImageTypes,lower(varargin))}];
-            
-            % Setup analysis
-            implementedAnalysis = {'tracking','distribution','streamlines'};
-            obj.forAnalysis = implementedAnalysis(ismember(implementedAnalysis,lower(varargin)));
-            
-            % Setup rectangle
-            if any(ismember(varargin,{'rect', 'rescale'}))
-                v = videoMaker.openVideo(obj);
-                v.CurrentTime = v.Duration/2;
-                
-                h = figure;
-                [~,obj.rect] = imcrop(readFrame(v));
-                delete(h)
-            end
-            
+        function obj = setupRegions(obj)
+            warning('off'); 
             % Setup regions
-            if any(strcmpi(varargin,'regions'))
-                v = videoMaker.openVideo(obj);
-                v.CurrentTime = v.Duration/2;
-                Im = readFrame(v);
-                
-                obj.regions = {};
-                done = false;
-                while ~done
-                    h = figure; imshow(Im); title('Close figure to end entering regions')
-                    [~,posX,posY] = roipoly;
-                    
-                    done = isempty(posX);
-                    if done
-                        break
-                    else
-                        close(h)
-                        obj.regions{end+1} = reshape([posX';posY'],1,[]);
-                        Im = insertShape(Im,'Polygon',obj.regions);
-                    end
+            v = obj.openVideo;
+            v.CurrentTime = v.Duration/2;
+            Im = readFrame(v);
+
+            obj.regions = {};
+            done = false;
+            while ~done
+                h = figure; imshow(Im); title('Close figure to end entering regions')
+                [~,posX,posY] = roipoly;
+
+                done = isempty(posX);
+                if done
+                    break
+                else
+                    % adjust ROI to rect
+                    R = bbox2points(obj.rect);
+                    [posX, posY] = polybool('intersection', posX, posY, R(:,1), R(:,2));
+
+                    % store and show
+                    close(h)
+                    obj.regions{end+1} = reshape([posX';posY'],1,[]);
+                    Im = insertShape(Im,'Polygon',obj.regions);
                 end
             end
-            
-            % Return remainder of varargin as options
-            lookFor = [implementedTypes, implementedImageTypes, implementedAnalysis, {'rect', 'regions'}];
-            obj.options = varargin(~ismember(varargin,lookFor));
+            warning('on');
         end
+        function obj = setupScale(obj)
+            % Setup scale
+            v = obj.openVideo;
+            v.CurrentTime = v.Duration/2;
+            Im = readFrame(v);
+            
+            fig = figure; imshow(Im); title('Select scale')
+            
+            try [x,y,~] = improfile;
+            catch
+                datacursormode toggle
+                return
+            end
+            close(fig)
+            distance = sqrt((x(end)-x(1))^2 + (y(end)-y(1))^2);
+            
+            input = inputdlg({['Channel width /mm (',num2str(distance),'pixels)'],'Channel depth /um'},'Setup scale',1,{'1.5','25'});
+            obj.scale = struct('factor',str2double(input{1})*1000/distance,'depth',str2double(input{2}));
+        end
+        
+        % Data analysis functions
         function analysis = analyseVideo(obj)
             %---------------------------------------------------------------
             %         Step 0 Determine analysis to be performed
@@ -368,14 +627,10 @@ classdef videoMaker
         function obj = sizeDistributions(obj) % WRITE include regions
         end
     end
+    %% Static, hidden functions
     methods (Static, Hidden = true)
-        function v = openVideo(obj)
-            try v = VideoReader(obj.videoLink);
-            catch me
-                msgbox({'Error while opening video link:' me.message})
-            end
-        end
-        function plotTracks(obj,ax,frame)
+        % Static or undefined functions
+        function plotTracks(obj,ax,frame) % Remove access to obj and inlcude in video output
             trail = 10; % second
             % check if analysis contains else return warning and do nothing
             if ~isfield(obj.analysis,'tracking')
@@ -410,7 +665,7 @@ classdef videoMaker
                 hold(ax,'off')
             end
         end
-        function Im = addTracksToFrame(obj,frame,Im,color)
+        function Im = addTracksToFrame(obj,frame,Im,color) % Remove access to obj and inlcude in video output
             trail = 10; % second
             % check if analysis contains else return warning and do nothing
             if ~isfield(obj.analysis,'tracking')
@@ -462,9 +717,7 @@ classdef videoMaker
                 Im(:,:,3) = C;
             end
         end
-        function plotDistribution(obj,ax) %WRITE
-        end
-        function plotRegions(obj,ax) %WRITE
+        function plotRegions(ax) %WRITE
         end
         function type = determineImageType(Im)
             if nargin < 1
