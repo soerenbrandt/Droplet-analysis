@@ -1,8 +1,6 @@
 classdef videoFrame
-    % videoFrame V1.3
+    % videoFrame V1.4
     % minor bug fixes
-    % added detectFluorescentDroplets to improve droplet finder speed
-    % added detectDropletsFULL for Odyssee analysis
     
     % Comes with videoMaker to analyze droplets moving in image sequence
     properties
@@ -306,7 +304,7 @@ classdef videoFrame
             %---------------------------------------------------------------
             %         Step 1 Find circles using imfindcircles
             %---------------------------------------------------------------
-            C = cell(numel(resizeFactor),1); R = C; M = C;
+            C(1:numel(resizeFactor)+1,1) = {zeros(0,2)}; R = cell(numel(resizeFactor),1); M = R;
             
             n = 1;
             for m = resizeFactor

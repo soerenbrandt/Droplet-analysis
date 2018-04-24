@@ -1,14 +1,9 @@
 classdef videoMaker
-    % videoMaker V1.3
-    % added objectsByRegion method to filter objects
-    % updated structure of videoMaker functions to more appropriatly
-    % represent their use
-    % added scatterDistribution and consolidated setupRegions into function
-    % added scale functionality
-    % IMPORTANT: add listener/event to make previous analysis backwards
-    % compatible
-    % added plotDistribution
-    % added video preparation for odyssee
+    % videoMaker V1.4
+    % added plotRegions
+    % updated plotDistribution
+    % added fractional distance to trackParticles
+    % updated makeVideo function
     
     % Analyses objects in video and returns data or video with
     % respective features and analysis.
@@ -50,7 +45,7 @@ classdef videoMaker
         date % creation date of the video file
     end
     
-    %% Methids
+    %% Methods
     methods
         % Video analysis functions
         function obj = videoMaker(videoLink,varargin) %WRITE
@@ -135,6 +130,92 @@ classdef videoMaker
         
         % Storage and output functions
         function makeVideo(obj,varargin) % UPDATE, quick makeVideo, and pretty makeVideo + 
+            progress = waitbar(0,'checking analysis');
+            %---------------------------------------------------------------
+            %         Step 1 Check for requested elements
+            %---------------------------------------------------------------
+%             plots = {};
+%             if ismember(varargin,'tracking') && isfield(obj.analysis,'tracking')
+%                 plots = {@(obj,ax,Nr)videoMaker.plotTracks(obj,ax,Nr)};
+%             end
+            
+            %---------------------------------------------------------------
+            %         Step 2 Make video
+            %---------------------------------------------------------------
+            waitbar(0,progress,'locating video');
+            video = obj.openVideo;
+            
+            % make video frame
+            fig = figure; title('video frame');
+            ax = axes(fig);
+            firstFrame = imcrop(readFrame(video),obj.rect); imshow(firstFrame);
+            ax.XLimMode = 'manual'; ax.XTickMode = 'manual'; ax.YLimMode = 'manual'; ax.YTickMode = 'manual';
+%             function [ax,fig] = makeFrame(video,obj,frameInd)
+%                 time = video.CurrentTime;
+%                 fig = figure;
+%                 image(imcrop(readFrame(video),obj.rect)); ax = fig.Children;
+%                 set(fig, 'Position', [0 0 obj.rect(3:4)*1.0526]);
+%                 set(fig.Children, 'Position', [0.025 0.025 0.95 0.95],'Units','normalized');
+%                 ax.XLimMode = 'manual'; ax.XTickMode = 'manual'; ax.YLimMode = 'manual'; ax.YTickMode = 'manual';
+%                 imshow(readFrame(video));
+%                 ax = fig.Children;
+%                 if time ~= obj.frames(frameInd).time
+%                     box(ax,'on'); ax.XTick = []; ax.YTick = []; 
+%                     ax.XColor = 'r'; ax.YColor = 'r'; ax.LineWidth = 2; 
+%                 end
+%             end
+            
+            framesTotal = length(obj.frames); timeRem = nan(1,framesTotal);
+            frameInd = 2; % editedFrames(numel(obj.frames)) = getframe(makeFrame(video,obj,1)); editedFrames = fliplr(editedFrames); video.CurrentTime = 0;
+            editedFrames(numel(obj.frames)) = im2frame(firstFrame); editedFrames = fliplr(editedFrames); % video.CurrentTime = 0;
+            while hasFrame(video) && video.CurrentTime < video.Duration*1.05
+                tic % start clock
+                time = video.CurrentTime;
+                waitbar(time/video.Duration,progress,...
+                    ['writing frame ',num2str(frameInd),' of ',num2str(framesTotal),...
+                    ' (time rem: ',num2str(round((framesTotal-frameInd)*nanmean(timeRem)/60)),'min)']);
+                
+                % [ax,fig] = makeFrame(video,obj,frameInd);
+                imshow(imcrop(readFrame(video),obj.rect)); % was image before, faster?
+                ax = fig.Children;
+                
+                % PLOT DATA FROM CELL ARRAY OF FUNCTION HANDLES
+%                 for add = plots
+%                     add{1}(obj,ax,frameInd); % TAKES TOO LONG
+%                 end
+                
+%                 if time ~= obj.frames(frameInd).time
+%                     box(ax,'on'); ax.XTick = []; ax.YTick = []; 
+%                     ax.XColor = 'r'; ax.YColor = 'r'; ax.LineWidth = 2; 
+%                 end
+                videoMaker.plotTracks(obj,ax,frameInd);
+%                 currentFrame = videoMaker.addTracksToFrame(obj,frameInd,imcrop(readFrame(video),obj.rect),[1 1 1]);
+
+                editedFrames(frameInd) = getframe(ax); %im2frame(currentFrame); %getframe(ax);
+                % cla(ax); close(fig);
+                frameInd = frameInd + 1;
+                timeRem(frameInd) = toc;
+            end
+%             close(fig)
+
+            waitbar(1,progress,'writing video file');
+            
+            [path,name] = fileparts(obj.videoLink);
+            
+            newVideo = VideoWriter([path,'/',name,'-analyzed'],'MPEG-4'); % CHANGE in varargin?
+            newVideo.FrameRate = video.FrameRate; % CHANGE in varargin?
+
+            % Clean out empty editedFrames
+            editedFrames(arrayfun(@(x)isempty(x.cdata),editedFrames)) = [];
+
+            % Write video file
+            open(newVideo)
+            writeVideo(newVideo,editedFrames);
+            close(newVideo)
+            
+            delete(progress)
+        end % FINISH
+        function makeCrudeVideo(obj,varargin) % UPDATE, quick makeVideo, and pretty makeVideo + 
             progress = waitbar(0,'checking analysis');
             %---------------------------------------------------------------
             %         Step 1 Check for requested elements
@@ -324,21 +405,25 @@ classdef videoMaker
             
             % filter objects based on location of droplets
             hold(ax,'on')
+            colorOrder = get(ax, 'ColorOrder');
             for n = regionIDs
                 if isempty(obj.rect)
                     regionXs = obj.regions{n}(1:2:end-1); regionYs = obj.regions{n}(2:2:end);
                 else
                     regionXs = obj.regions{n}(1:2:end-1) - obj.rect(1); regionYs = obj.regions{n}(2:2:end) - obj.rect(2);
                 end
-                inRegion = objects(cellfun(@(pos)any(inpolygon(pos(:,1),pos(:,2),regionXs,regionYs)),{objects.position}));
+                % inRegion = objects(cellfun(@(pos)any(inpolygon(pos(:,1),pos(:,2),regionXs,regionYs)),{objects.position}));
+                inRegion = @(object)inpolygon(object.position(:,1),object.position(:,2),regionXs,regionYs);
                 
-                if n == 1 % added for AG1B-5
-                    inRegion(arrayfun(@(obj)mean(obj.size),inRegion)<50) = [];
-                end
-                
-                meanParam = arrayfun(@(obj)mean(obj.(param)),inRegion(arrayfun(@(obj)length(obj.(param)),inRegion)>=1));
+%                 if n == 1 % added for AG1B-5
+%                     inRegion(arrayfun(@(obj)mean(obj.size),inRegion)<50) = [];
+%                 end
+                meanParam = arrayfun(@(object)mean(object.(param)(inRegion(object))),objects(arrayfun(@(object)sum(inRegion(object))>0,objects)));
+                %meanParam = cell2mat(arrayfun(@(object)object.(param)(inRegion(object)),objects(arrayfun(@(object)sum(inRegion(object))>2,objects)),'uni',0));
+                %2 meanParam = cell2mat(arrayfun(@(obj)(obj.(param)),inRegion(arrayfun(@(obj)length(obj.(param)),inRegion)>=1),'uni',0));
+                % meanParam = arrayfun(@(obj)mean(obj.(param)),inRegion(arrayfun(@(obj)length(obj.(param)),inRegion)>=1));
                 [values, edges] = histcounts(meanParam,100,'Normalization','Probability','BinLimits',[1,100]);
-                h = plot(ax,edges(2:end),values,'.');
+                h = plot(ax,edges(2:end),values,'-','Color',colorOrder(n,:));
             end
             hold(ax,'off')
         end
@@ -355,6 +440,42 @@ classdef videoMaker
             
             h = axes(figure); imshow(readFrame(v)); viscircles(centers, radii);
         end
+        function plotRegions(obj,ax,varargin) 
+            if isempty(obj.regions)
+                msgbox('There are currently no regions, use "obj.setupRegions" to add regions.');
+                return
+            end
+                 
+            if isempty(varargin(cellfun(@(c)isa(c,'numeric'),varargin)))
+                regionIDs = 1:numel(obj.regions);
+            else
+                regionIDs = varargin{1};
+            end
+            
+            if isempty(regionIDs)
+                return
+            end
+            
+            if nargin < 2 || isempty(ax)
+                % Get example image
+                v = obj.openVideo;
+                v.CurrentTime = v.Duration/2;
+                Im = readFrame(v);
+                ax = axes(figure);
+                imshow(Im);
+            end
+            
+            % filter objects based on location of droplets
+            hold(ax,'on')
+            colorOrder = get(ax, 'ColorOrder');
+            for n = regionIDs
+                regionXs = obj.regions{n}(1:2:end-1); regionYs = obj.regions{n}(2:2:end);
+                
+                plot(ax,regionXs,regionYs,'-','LineWidth',2,'Color',colorOrder(n,:));
+                text(ax,max(regionXs+7),mean(regionYs),num2str(n),'FontSize',16,'FontWeight','bold','Color',colorOrder(n,:));
+            end
+            hold(ax,'off')
+        end
         
         % Dependent variable functions
         function objects = get.Objects(obj)
@@ -366,14 +487,14 @@ classdef videoMaker
             % Reorient data for tracking
             frameData = arrayfun(@(n)reportData(obj.frames(n)),1:numel(obj.frames),'uni',0);
             frameData = cellfun(@(x,y)[x repmat(y,size(x,1),1)],frameData,num2cell(1:numel(frameData)),'uni',0);
-            particlePositions = cell2mat(reshape(frameData,[],1));
+            particlePositions = sortrows(cell2mat(reshape(frameData,[],1)),[4 1 2]);
             % particlePositions(:,1:2) = particlePositions(:,1:2) + repmat(obj.rect(1:2),size(particlePositions,1),1);
             
             % Retrieve particle tracking data and sort
             particleTracks = obj.analysis.tracking;
             particleIDs = sortrows(particleTracks,[3 1 2]);
             
-            particles = splitapply(@(x){x},particlePositions,particleIDs(:,4));
+            particles = splitapply(@(x){x},particlePositions,particleIDs(:,end));
             vol = @(r)1e-3*(4/3*pi*r.^3 - 2*(pi/6*max([r-obj.scale.depth/2,zeros(size(r))],[],2).*(3*max([r.^2-(obj.scale.depth/2)^2,zeros(size(r))],[],2)+max([(r-obj.scale.depth/2).^2,zeros(size(r))],[],2))));
             
             objects = cellfun(@(P)struct('size',P(:,3)*obj.scale.factor,'position',P(:,[1,2]),...
@@ -616,7 +737,8 @@ classdef videoMaker
             
             % track particle positions
             % addPath('tracking');
-            analysis = track(particlePositions(:,[1 2 4]),median(particlePositions(:,3)));
+            % param = struct('mem',2,'good',0,'dim',2,'quiet',0);
+            analysis = track(particlePositions(:,[1 2 4]),2.5); %,param); % median(particlePositions(:,3))
             %uniqueTracks = unique(res(:,4));
             %tracks = arrayfun(@(n)struct('x',res(res(:,4) == n,1),'y',res(res(:,4) == n,2),'time',res(res(:,4) == n,3)),uniqueTracks);
             
@@ -631,7 +753,7 @@ classdef videoMaker
     methods (Static, Hidden = true)
         % Static or undefined functions
         function plotTracks(obj,ax,frame) % Remove access to obj and inlcude in video output
-            trail = 10; % second
+            trail = 0.5; % second
             % check if analysis contains else return warning and do nothing
             if ~isfield(obj.analysis,'tracking')
                 warning('No tracking analysis found.'); return
@@ -650,7 +772,9 @@ classdef videoMaker
             % Plot tracking results into axis handle
             trackingResults = obj.analysis.tracking;
             current = trackingResults(time > trackingResults(:,3) & trackingResults(:,3) > time-trail,:);
-            tracks = splitapply(@(x){x},current(:,[1,2]),current(:,4));
+            [~, ~, trackMap] = unique(current(:,4));
+            tracks = splitapply(@(x){x},current(:,[1,2]),trackMap);
+            XYs = cellfun(@(track){track(:,1), track(:,2)},tracks,'uni',0); XYs = [XYs{:}];
             
 %             current = cellfun(@(x)any(x < time & x > time-trail),{obj.analysis.tracking.tracks.time});
 %             times = {obj.analysis.tracking.tracks(current).time};
@@ -661,7 +785,7 @@ classdef videoMaker
 %             end
             if ~isempty(tracks)
                 hold(ax,'on')
-                plot(ax,tracks{:},'Color','w')
+                plot(ax,XYs{:},'Color','r')
                 hold(ax,'off')
             end
         end
@@ -716,8 +840,6 @@ classdef videoMaker
                 Im(:,:,2) = B;
                 Im(:,:,3) = C;
             end
-        end
-        function plotRegions(ax) %WRITE
         end
         function type = determineImageType(Im)
             if nargin < 1
