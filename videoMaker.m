@@ -1,9 +1,9 @@
 classdef videoMaker
-    % videoMaker V1.4
-    % added plotRegions
-    % updated plotDistribution
-    % added fractional distance to trackParticles
-    % updated makeVideo function
+    % videoMaker V1.5
+    % bug fixes
+    % corrected wrong Volume calculation
+    % added trackObject
+    % updated options to include mem and maxdisp for tracking
     
     % Analyses objects in video and returns data or video with
     % respective features and analysis.
@@ -49,11 +49,19 @@ classdef videoMaker
     methods
         % Video analysis functions
         function obj = videoMaker(videoLink,varargin) %WRITE
-            % Creates videoMaker object from brightfield or fluorescence
-            % videos. Varargin can be used to define a custom sequence of
+            % obj = videoMaker(videoLink,varargin) creates a videoMaker
+            % object from tracking objects in the videoFile specified by 
+            % videoLink. varargin can be used to define a custom sequence of
             % analysis tools, including 'circle', 'tracking', and 'Show:
             % <per number of frames>'. Default is varargin =
             % {'rescale','circle','tracking','show: 500'}.
+            %
+            %   obj = videoMaker() calls the videoMaker class with the
+            %   standard sequence {'rescale','circle','tracking','show: 500
+            %   '}.
+            %
+            %   See also videoMaker.runAnalysis, videoMaker.trackParticles,
+            %   and videoFrame.
             
             %---------------------------------------------------------------
             %         Step 1 Set default variables
@@ -96,7 +104,14 @@ classdef videoMaker
             obj.analysis = obj.analyseVideo;
         end
         function obj = redoAnalysis(obj,varargin)
-            % Repeat initial analysis or analysis specified in varargin
+            % obj = redoAnalysis(obj,varargin) repeats the analysis for obj
+            % or performs the analysis specified in varargin.
+            %
+            %   obj = redoAnalysis(obj,'tracking') performs particle
+            %   tracking analaysis for obj.
+            %
+            %   See also videoMaker.runAnalysis, videoMaker.trackParticles.
+            
             if isempty(varargin)
                 varargin = [obj.forType, obj.forAnalysis, obj.options, {obj.imageType}];
             end
@@ -119,6 +134,14 @@ classdef videoMaker
             obj.analysis = analyseVideo(obj);
         end % check which analysis has been done and redo (make different from runAnalysis
         function analysis = runAnalysis(obj,of)
+            % analysis = runAnalysis(obj,of) returns the analysis specified
+            % by of for the videoMaker object obj.
+            %
+            %   analysis = runAnalysis(obj,'tracking') performs particle
+            %   tracking analaysis for obj.
+            %
+            %   See also videoMaker.runAnalysis, videoMaker.trackParticles.
+            
             switch of
                 case 'tracking'
                     analysis = trackParticles(obj);
@@ -130,6 +153,8 @@ classdef videoMaker
         
         % Storage and output functions
         function makeVideo(obj,varargin) % UPDATE, quick makeVideo, and pretty makeVideo + 
+            % HELP for makeVideo currently unavailable.
+            
             progress = waitbar(0,'checking analysis');
             %---------------------------------------------------------------
             %         Step 1 Check for requested elements
@@ -216,6 +241,8 @@ classdef videoMaker
             delete(progress)
         end % FINISH
         function makeCrudeVideo(obj,varargin) % UPDATE, quick makeVideo, and pretty makeVideo + 
+            % HELP for makeCrudeVideo currently unavailable.
+            
             progress = waitbar(0,'checking analysis');
             %---------------------------------------------------------------
             %         Step 1 Check for requested elements
@@ -294,9 +321,102 @@ classdef videoMaker
             
             delete(progress)
         end % FINISH
+        function trackObject(obj,n)
+            % trackObject(obj,n) returns an image sequence of the video
+            % analyzed by obj. The image sequence tracks one particle if n
+            % is an integer, or all particles in frames specified by n if n
+            % is an array of integers.
+            %
+            %   See also videoMaker.trackParticles.
+            
+            if nargin < 2
+                return
+            end
+            
+            % open video
+            video = obj.openVideo;
+            
+            switch length(n)
+                case 1
+                    try object = obj.Objects(n);
+                    catch me
+                        error(me)
+                    end
+                    
+                    startTime = max([object.atTime(1)-0.4,0]); endTime = object.atTime(end)+0.4;
+                    
+                    % select relevant frames and highlight object
+                    video.CurrentTime = startTime;
+                    
+                    numberOfFrames = round((endTime-startTime)*video.FrameRate);
+                    sequence = uint8(zeros(video.Height,video.Width,3,numberOfFrames));
+                    
+                    frame = 1;
+                    while hasFrame(video) && video.CurrentTime <= endTime
+                        location = find(video.CurrentTime == object.atTime);
+                        Im = readFrame(video);
+                        sequence(:,:,:,frame) = insertShape(Im,'circle', ...
+                            [object.position(location,:)+obj.rect(1:2) object.size(location)/obj.scale.factor], ...
+                            'LineWidth',2,'Color','red');
+                        frame = frame + 1;
+                    end
+                otherwise
+                    % select relevant frames and highlight objects
+                    objects = obj.Objects(arrayfun(@(object)any(ismember(n,object.inFrame)),obj.Objects));
+                    colors = uint8(255*hsv(length(objects)));
+                    
+                    % remove n larger than number of frames
+                    if any(n > numel(obj.frames))
+                        warning('Some indices excede number of frames');
+                        n(n > numel(obj.frames)) = [];
+                    end
+                    
+                    numberOfFrames = numel(n);
+                    sequence = uint8(zeros(video.Height,video.Width,3,numberOfFrames));
+                    
+                    progress = waitbar(0,'grabbing frames');
+                    for Nr = 1:numberOfFrames
+                         waitbar(Nr/numel(n),progress,...
+                                ['analyzing frame ',num2str(Nr),' of ',num2str(numberOfFrames)]);
+                            
+                        video.CurrentTime = obj.frames(n(Nr));
+                        locations = arrayfun(@(object)[object.position(video.CurrentTime == object.atTime,:) + obj.rect(1:2) ...
+                                                       median(object.size)/obj.scale.factor],objects,'uni',0);
+                        clean = cellfun(@(x)size(x,2)==3,locations);
+                        Im = readFrame(video);
+                        sequence(:,:,:,Nr) = insertShape(Im,'circle',vertcat(locations{clean}),'LineWidth',2,'Color',colors(clean,:));
+                    end
+                    delete(progress)
+                    
+%                     startTime = obj.frames(min(n)).time; endTime = obj.frames(max(n)).time;
+%                     
+%                     % select relevant frames and highlight object
+%                     video.CurrentTime = startTime;
+%                     
+%                     while hasFrame(video) && video.CurrentTime <= endTime && frame <= max(n)
+%                         locations = arrayfun(@(object)[object.position(video.CurrentTime == object.atTime,:) + obj.rect(1:2) ...
+%                                                        median(object.size)/obj.scale.factor],objects,'uni',0);
+%                         clean = cellfun(@(x)size(x,2)==3,locations);
+%                         Im = readFrame(video);
+%                         sequence(:,:,:,frame) = insertShape(Im,'circle',vertcat(locations{clean}),'LineWidth',2,'Color',colors(clean,:));
+%                         frame = frame + 1;
+%                     end
+            end
+            implay(sequence,video.FrameRate)
+        end
         function makeCVS(obj,varargin) %WRITE
+            %HELP for makeCVS currently unavailable
         end
         function save(obj,path)
+            % save(obj,path) saves the videoMaker object obj as a matfile
+            % to the path specified in path. The name of the videoMaker
+            % object is the name of the video specified in obj.videoLink.
+            %
+            %   save(obj) saves the videoMaker object under the path
+            %   specified by videoLink.
+            %
+            %   See also videoMaker.
+            
             if nargin < 2 || isempty(path)
                 [path,name] = fileparts(obj.videoLink);
             else
@@ -308,6 +428,13 @@ classdef videoMaker
         
         % Data access functions
         function inRegion = objectsInRegion(obj,varargin)
+            % inRegion = objectsInRegion(obj,varargin) returns all objects
+            % specified as a list of integers in varargin. If no region 
+            % from obj.regions is selected, it returns objects for all 
+            % regions.
+            %
+            %   See also videoMaker.setupRegions, videoMaker.trackParticles.
+            
             if isempty(obj.regions)
                 obj = obj.setupRegions;
             end
@@ -377,7 +504,7 @@ classdef videoMaker
             end
             hold(ax,'off')
         end
-        function h = plotDistribution(obj,ax,varargin)
+        function h = plotHistogram(obj,ax,varargin)
             if isempty(obj.regions)
                 obj = obj.setupRegions;
             end
@@ -424,6 +551,56 @@ classdef videoMaker
                 % meanParam = arrayfun(@(obj)mean(obj.(param)),inRegion(arrayfun(@(obj)length(obj.(param)),inRegion)>=1));
                 [values, edges] = histcounts(meanParam,100,'Normalization','Probability','BinLimits',[1,100]);
                 h = plot(ax,edges(2:end),values,'-','Color',colorOrder(n,:));
+            end
+            hold(ax,'off')
+        end
+        function h = plotDistribution(obj,ax,varargin)
+            if isempty(obj.regions)
+                obj = obj.setupRegions;
+            end
+            if ismember('volume',varargin(cellfun(@(c)isa(c,'char'),varargin)))
+                param = 'volume';
+            else
+                param = 'size';
+            end
+            
+            if isempty(varargin(cellfun(@(c)isa(c,'numeric'),varargin)))
+                regionIDs = 1:numel(obj.regions);
+            else
+                regionIDs = varargin{1};
+            end
+            
+            if isempty(regionIDs)
+                return
+            else
+                objects = obj.Objects;
+            end
+            
+            if nargin < 2 || isempty(ax)
+                ax = axes(figure);
+            end
+            
+            % filter objects based on location of droplets
+            hold(ax,'on')
+            colorOrder = get(ax, 'ColorOrder');
+            for n = regionIDs
+                if isempty(obj.rect)
+                    regionXs = obj.regions{n}(1:2:end-1); regionYs = obj.regions{n}(2:2:end);
+                else
+                    regionXs = obj.regions{n}(1:2:end-1) - obj.rect(1); regionYs = obj.regions{n}(2:2:end) - obj.rect(2);
+                end
+                % inRegion = objects(cellfun(@(pos)any(inpolygon(pos(:,1),pos(:,2),regionXs,regionYs)),{objects.position}));
+                inRegion = @(object)inpolygon(object.position(:,1),object.position(:,2),regionXs,regionYs);
+                
+%                 if n == 1 % added for AG1B-5
+%                     inRegion(arrayfun(@(obj)mean(obj.size),inRegion)<50) = [];
+%                 end
+                meanParam = arrayfun(@(object)mean(object.(param)(inRegion(object))),objects(arrayfun(@(object)sum(inRegion(object))>0,objects)));
+                %meanParam = cell2mat(arrayfun(@(object)object.(param)(inRegion(object)),objects(arrayfun(@(object)sum(inRegion(object))>2,objects)),'uni',0));
+                %2 meanParam = cell2mat(arrayfun(@(obj)(obj.(param)),inRegion(arrayfun(@(obj)length(obj.(param)),inRegion)>=1),'uni',0));
+                % meanParam = arrayfun(@(obj)mean(obj.(param)),inRegion(arrayfun(@(obj)length(obj.(param)),inRegion)>=1));
+                [values, at] = ksdensity(meanParam,sort([linspace(0,100,100),meanParam']));
+                h = plot(ax,at,values,'-','Color',colorOrder(n,:));
             end
             hold(ax,'off')
         end
@@ -498,7 +675,7 @@ classdef videoMaker
             vol = @(r)1e-3*(4/3*pi*r.^3 - 2*(pi/6*max([r-obj.scale.depth/2,zeros(size(r))],[],2).*(3*max([r.^2-(obj.scale.depth/2)^2,zeros(size(r))],[],2)+max([(r-obj.scale.depth/2).^2,zeros(size(r))],[],2))));
             
             objects = cellfun(@(P)struct('size',P(:,3)*obj.scale.factor,'position',P(:,[1,2]),...
-                                         'volume', vol(P(:,3)/2*obj.scale.factor),...
+                                         'volume', vol(P(:,3)*obj.scale.factor),...
                                            'atTime',P(:,4),'inFrame',P(:,5)),particles);
         end
     end
@@ -731,21 +908,55 @@ classdef videoMaker
             end
         end
         function analysis = trackParticles(obj)
+            % analysis = trackParticles(obj) performs particle tracking
+            % analysis on the objects found by videoMaker. Use runAnalysis
+            % or redoAnalysis to perform trackparticles with options.
+            %
+            %   analysis = trackParticles(obj) returns tracked, indexed
+            %   positions. See track for details.
+            %
+            %   obj = redoAnalysis(obj,'tracking') performs particle
+            %   tracking analaysis for obj.
+            %
+            %   obj = redoAnalysis(obj,'tracking','mem: 2','maxdisp: 5') 
+            %   performs particle tracking with options. 
+            %       'mem: n' adjusts particle memory, where particle 
+            %       positions can disappear for n time steps before the 
+            %       particle is considered gone.
+            %       'maxdisp: d' adjusts the maximum displacement of the
+            %       particles. d should be on the order of the particles as
+            %       a first estimate. 
+            %       See track for more details.
+            %
+            %   See also videoMaker.runAnalysis, videoMaker.trackParticles.
+            
             % Reorient data for tracking
             frameData = arrayfun(@(n)reportData(obj.frames(n)),1:numel(obj.frames),'uni',0);
             particlePositions = cell2mat(reshape(frameData,[],1));
             
+            % set memory and displacement
+            if any(contains(obj.options,{'mem:'},'IgnoreCase',true))
+                mem = str2double(cell2mat(...
+                    regexp(obj.options{contains(obj.options,{'mem:'},'IgnoreCase',true)},'\d*','Match')));
+            else; mem = 2; 
+            end
+            if any(contains(obj.options,{'maxdisp:'},'IgnoreCase',true))
+                maxdisp = str2double(cell2mat(...
+                    regexp(obj.options{contains(obj.options,{'maxdisp:'},'IgnoreCase',true)},'\d*','Match')));
+            else; maxdisp = 2.5; 
+            end
+            
             % track particle positions
             % addPath('tracking');
-            % param = struct('mem',2,'good',0,'dim',2,'quiet',0);
-            analysis = track(particlePositions(:,[1 2 4]),2.5); %,param); % median(particlePositions(:,3))
+            param = struct('mem',mem,'good',0,'dim',2,'quiet',0);
+            analysis = track(particlePositions(:,[1 2 4]),maxdisp,param); % median(particlePositions(:,3))
             %uniqueTracks = unique(res(:,4));
             %tracks = arrayfun(@(n)struct('x',res(res(:,4) == n,1),'y',res(res(:,4) == n,2),'time',res(res(:,4) == n,3)),uniqueTracks);
             
             % return analysis
             %analysis = struct('for','tracking',...
                         %'tracks',tracks);
-        end % WRITE
+        end
         function obj = sizeDistributions(obj) % WRITE include regions
         end
     end
@@ -869,6 +1080,19 @@ classdef videoMaker
             else
                 type = 'fluorescence';
             end
+        end
+        function objects = removeStationary(objects)
+            if length(objects) < 1
+                return
+            end
+            
+            % find objects that move out of defined radius during the video
+            distance = @(O,P)sqrt( (P(:,1) - O(1)).^2 + (P(:,2) - O(2)).^2 );
+            
+            kept = arrayfun(@(object)any( distance(object.position(1,:),object.position) > object.size(1) ),objects);
+            
+            % keep valuable objects (i.e. moving)
+            objects = objects(kept);
         end
     end
 end

@@ -1,5 +1,5 @@
 classdef videoFrame
-    % videoFrame V1.4
+    % videoFrame V1.5
     % minor bug fixes
     
     % Comes with videoMaker to analyze droplets moving in image sequence
