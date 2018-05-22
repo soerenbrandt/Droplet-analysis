@@ -1,9 +1,6 @@
 classdef videoMaker
-    % videoMaker V1.5
-    % bug fixes
-    % corrected wrong Volume calculation
-    % added trackObject
-    % updated options to include mem and maxdisp for tracking
+    % videoMaker V1.51
+    % fixed error where trackObject would fail for multiple frames
     
     % Analyses objects in video and returns data or video with
     % respective features and analysis.
@@ -379,7 +376,7 @@ classdef videoMaker
                          waitbar(Nr/numel(n),progress,...
                                 ['analyzing frame ',num2str(Nr),' of ',num2str(numberOfFrames)]);
                             
-                        video.CurrentTime = obj.frames(n(Nr));
+                        video.CurrentTime = obj.frames(n(Nr)).time;
                         locations = arrayfun(@(object)[object.position(video.CurrentTime == object.atTime,:) + obj.rect(1:2) ...
                                                        median(object.size)/obj.scale.factor],objects,'uni',0);
                         clean = cellfun(@(x)size(x,2)==3,locations);
