@@ -1,6 +1,10 @@
 classdef videoMaker
-    % videoMaker V1.51
-    % fixed error where trackObject would fail for multiple frames
+    % videoMaker V1.52
+    % added adjustments for number average and volume average to
+    % plotDistribution (not yet fully implemented)
+    % simplified volume calculation
+    % fixed bug that occured when obj.setupRegion was called with an empty
+    % obj.rect
     
     % Analyses objects in video and returns data or video with
     % respective features and analysis.
@@ -560,17 +564,29 @@ classdef videoMaker
             else
                 param = 'size';
             end
+            if any(strcmpi(varargin,'Vavg')) && strcmp(param,'volume')
+                adjusted = @(x,at)at.*x/trapz(at,at.*x);
+            elseif any(strcmpi(varargin,'Vavg')) && strcmp(param,'size')
+                Fadj = @(r)1e-3*(4/3*pi*r.^3 - 2*(pi/3*max([r-obj.scale.depth/2;zeros(size(r))],[],1).^2.*(2*r+obj.scale.depth/2)));
+                adjusted = @(x,at)x.*Fadj(at)/trapz(at,x.*Fadj(at));
+            else
+                adjusted = @(x,at)x;
+            end
             
             if isempty(varargin(cellfun(@(c)isa(c,'numeric'),varargin)))
                 regionIDs = 1:numel(obj.regions);
             else
-                regionIDs = varargin{1};
+                regionIDs = [varargin{cellfun(@(c)isa(c,'numeric'),varargin)}];
             end
             
             if isempty(regionIDs)
                 return
             else
                 objects = obj.Objects;
+            end
+            
+            if any(strcmpi(varargin,'removeIdle'))
+                objects = videoMaker.removeStationary(objects);
             end
             
             if nargin < 2 || isempty(ax)
@@ -597,7 +613,7 @@ classdef videoMaker
                 %2 meanParam = cell2mat(arrayfun(@(obj)(obj.(param)),inRegion(arrayfun(@(obj)length(obj.(param)),inRegion)>=1),'uni',0));
                 % meanParam = arrayfun(@(obj)mean(obj.(param)),inRegion(arrayfun(@(obj)length(obj.(param)),inRegion)>=1));
                 [values, at] = ksdensity(meanParam,sort([linspace(0,100,100),meanParam']));
-                h = plot(ax,at,values,'-','Color',colorOrder(n,:));
+                h = plot(ax,at,adjusted(values,at),'-','Color',colorOrder(n,:));
             end
             hold(ax,'off')
         end
@@ -669,7 +685,7 @@ classdef videoMaker
             particleIDs = sortrows(particleTracks,[3 1 2]);
             
             particles = splitapply(@(x){x},particlePositions,particleIDs(:,end));
-            vol = @(r)1e-3*(4/3*pi*r.^3 - 2*(pi/6*max([r-obj.scale.depth/2,zeros(size(r))],[],2).*(3*max([r.^2-(obj.scale.depth/2)^2,zeros(size(r))],[],2)+max([(r-obj.scale.depth/2).^2,zeros(size(r))],[],2))));
+            vol = @(r)1e-3*(4/3*pi*r.^3 - 2*(pi/3*max([r-obj.scale.depth/2,zeros(size(r))],[],2).^2.*(2*r+obj.scale.depth/2)));
             
             objects = cellfun(@(P)struct('size',P(:,3)*obj.scale.factor,'position',P(:,[1,2]),...
                                          'volume', vol(P(:,3)*obj.scale.factor),...
@@ -856,9 +872,11 @@ classdef videoMaker
                 if done
                     break
                 else
+                    if ~isempty(obj.rect)
                     % adjust ROI to rect
-                    R = bbox2points(obj.rect);
-                    [posX, posY] = polybool('intersection', posX, posY, R(:,1), R(:,2));
+                        R = bbox2points(obj.rect);
+                        [posX, posY] = polybool('intersection', posX, posY, R(:,1), R(:,2));
+                    end
 
                     % store and show
                     close(h)
@@ -940,7 +958,7 @@ classdef videoMaker
             if any(contains(obj.options,{'maxdisp:'},'IgnoreCase',true))
                 maxdisp = str2double(cell2mat(...
                     regexp(obj.options{contains(obj.options,{'maxdisp:'},'IgnoreCase',true)},'\d*','Match')));
-            else; maxdisp = 2.5; 
+            else; maxdisp = 5; 
             end
             
             % track particle positions
