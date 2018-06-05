@@ -1,10 +1,8 @@
 classdef videoMaker
-    % videoMaker V1.52
-    % added adjustments for number average and volume average to
-    % plotDistribution (not yet fully implemented)
-    % simplified volume calculation
-    % fixed bug that occured when obj.setupRegion was called with an empty
-    % obj.rect
+    % videoMaker V1.53
+    % moved implemented features to properties in constants
+    % fixed a bug where track objects does not work if the rect function is
+    % not defined
     
     % Analyses objects in video and returns data or video with
     % respective features and analysis.
@@ -32,6 +30,7 @@ classdef videoMaker
     end
     properties (Dependent)
         Objects % objects found in image analysis
+        ImplementedAnalysis
         Distribution % distribution of particles in video
     end
     properties (SetAccess = protected)
@@ -44,6 +43,11 @@ classdef videoMaker
     end
     properties (SetAccess = immutable)
         date % creation date of the video file
+    end
+    properties (Constant)
+        implementedTypes = {'circle','full'};
+        implementedImageTypes = {'fluorescence', 'brightfield', 'darkfield'};
+        implementedAnalysis = {'tracking','distribution','streamlines'};
     end
     
     %% Methods
@@ -85,7 +89,7 @@ classdef videoMaker
                 return
             elseif isempty(varargin)
                 varargin = {'rescale','circle','tracking','show: 500'}; % standard operations
-            elseif ~any(ismember({'circle','full'},lower(varargin)))
+            elseif ~any(ismember(obj.implementedTypes,lower(varargin)))
                 varargin{end+1} = 'circle';
             end
             
@@ -113,26 +117,37 @@ classdef videoMaker
             %
             %   See also videoMaker.runAnalysis, videoMaker.trackParticles.
             
-            if isempty(varargin)
-                varargin = [obj.forType, obj.forAnalysis, obj.options, {obj.imageType}];
-            end
+            % check reported properties for accuracy
+            if isempty(obj.analysis) && ~isempty(obj.forAnalysis); varargin = [varargin, obj.forAnalysis]; end
+            if isempty(obj.imageType); obj.imageType = obj.frames(1).type; end
+            if isempty(obj.rect); obj.rect = obj.frames(1).rect; end
+            if isempty(obj.rect); obj.rect = [0 0 inf inf]; end
+            
+            newAnalysis = [obj.ImplementedAnalysis, varargin];
             
             %---------------------------------------------------------------
             %         Step 1 Set analysis variables
             %---------------------------------------------------------------
-            obj = setupVideoAnalysisFor(obj,varargin{:});
+            obj = setupVideoAnalysisFor(obj,newAnalysis{:});
             
             %---------------------------------------------------------------
-            %         Step 2 Analyse frames
+            %         Step 2 Redo analysis for type
             %---------------------------------------------------------------
-            if ~isempty(obj.forType)
-                obj.frames = analyseFrames(obj);
+            types = obj.implementedTypes(ismember(obj.implementedTypes,lower(varargin)));
+            for type = types
+                new = analyseFrames(obj);
+                for n = 1:numel(obj.frames)
+                    obj.frames(n).analysis.(type{:}) = new.analysis.(type{:});
+                end
             end
             
             %---------------------------------------------------------------
             %         Step 3 Analyse video
             %---------------------------------------------------------------
-            obj.analysis = analyseVideo(obj);
+            analyses = obj.implementedAnalysis(ismember(obj.implementedAnalysis,lower(varargin)));
+            for analyse = analyses
+                obj.analysis.(analyse{:}) = runAnalysis(obj,analyse{:});
+            end
         end % check which analysis has been done and redo (make different from runAnalysis
         function analysis = runAnalysis(obj,of)
             % analysis = runAnalysis(obj,of) returns the analysis specified
@@ -691,6 +706,9 @@ classdef videoMaker
                                          'volume', vol(P(:,3)*obj.scale.factor),...
                                            'atTime',P(:,4),'inFrame',P(:,5)),particles);
         end
+        function implementedAnalysis = get.ImplementedAnalysis(obj)
+           implementedAnalysis = [obj.forType, obj.forAnalysis, obj.options, {obj.imageType}]; 
+        end
     end
     %% Hidden methods
     methods (Hidden = true) 
@@ -752,15 +770,12 @@ classdef videoMaker
         % Video analysis functions
         function obj = setupVideoAnalysisFor(obj,varargin)
             % Setup frame analysis
-            implementedTypes = {'circle','full'};
-            obj.forType = implementedTypes(ismember(implementedTypes,lower(varargin)));
+            obj.forType = obj.implementedTypes(ismember(obj.implementedTypes,lower(varargin)));
             
-            implementedImageTypes = {'fluorescence', 'brightfield', 'darkfield'};
-            obj.imageType = [implementedImageTypes{ismember(implementedImageTypes,lower(varargin))}];
+            obj.imageType = [obj.implementedImageTypes{ismember(obj.implementedImageTypes,lower(varargin))}];
             
             % Setup analysis
-            implementedAnalysis = {'tracking','distribution','streamlines'};
-            obj.forAnalysis = implementedAnalysis(ismember(implementedAnalysis,lower(varargin)));
+            obj.forAnalysis = obj.implementedAnalysis(ismember(obj.implementedAnalysis,lower(varargin)));
             
             % Setup rectangle
             if any(ismember(varargin,{'rect', 'rescale'}))
@@ -783,7 +798,7 @@ classdef videoMaker
             end
             
             % Return remainder of varargin as options
-            lookFor = [implementedTypes, implementedImageTypes, implementedAnalysis, {'rect', 'regions'}];
+            lookFor = [obj.implementedTypes, obj.implementedImageTypes, obj.implementedAnalysis, {'rect', 'regions'}];
             obj.options = varargin(~ismember(varargin,lookFor));
         end
         function frames = analyseFrames(obj)
