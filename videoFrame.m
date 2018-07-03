@@ -1,6 +1,11 @@
 classdef videoFrame
-    % videoFrame V1.5
+    % videoFrame V1.6
     % minor bug fixes
+    % added videoFrame.combineAnalysis to join two analysis types
+    % adjusted brightfield boundary width factor from 2 to 1.75
+    % fixed a bug that sometimes occured when report returned single values
+    % adjusted metric cutoff in full analysis to 0.35 (from 0.95)
+    % added quality feature to evaluate during plotframe analysis
     
     % Comes with videoMaker to analyze droplets moving in image sequence
     properties
@@ -61,7 +66,7 @@ classdef videoFrame
             %---------------------------------------------------------------
             %         Step 3 Run analysis
             %---------------------------------------------------------------
-            implementedAnalysis = {'circle','full'}; % potentially ellipse, droplet, rectangle
+            implementedAnalysis = {'circle','full','combined'}; % potentially ellipse, droplet, rectangle
             performAnalysisFor = find(ismember(implementedAnalysis,lower(varargin)));
             
             for n = performAnalysisFor
@@ -82,29 +87,34 @@ classdef videoFrame
                 ax = axes(figure);
                 imshow(obj.Image)
             end
-            
-            % CHANGE if varargin specifies anything, else plot first item
             if isempty(obj.analysis)
                 return
+            elseif any(cellfun(@(field)isa(field,'numeric'),varargin))
+                analysisToPlot = varargin{find(cellfun(@(field)isa(field,'numeric'),varargin),1)};
             else
-                hold(ax,'on')
-                analysisFor = fieldnames(obj.analysis);
-                switch analysisFor{1}
-                    case 'circle'
-                        if any(cellfun(@(str)strcmp(str,'noOutline'),varargin))
-                            h = plot(obj.analysis.circle.centers(:,1),obj.analysis.circle.centers(:,2),'r+');
-                        else
-                            h = viscircles(ax,obj.analysis.circle.centers,obj.analysis.circle.radii);
-                        end
-                    case 'full'
-                        if any(cellfun(@(str)strcmp(str,'noOutline'),varargin))
-                            h = plot(obj.analysis.full.centers(:,1),obj.analysis.full.centers(:,2),'r+');
-                        else
-                            h = viscircles(ax,obj.analysis.full.centers,obj.analysis.full.radii);
-                        end
-                    otherwise
-                        return
-                end
+                analysisToPlot = length(fieldnames(obj.analysis));
+            end
+            
+            % CHANGE if varargin specifies anything, else plot first item
+            hold(ax,'on')
+            analysisFor = fieldnames(obj.analysis);
+            switch analysisFor{analysisToPlot}
+                case 'circle'
+                    if any(cellfun(@(str)strcmp(str,'noOutline'),varargin))
+                        h = plot(obj.analysis.circle.centers(:,1),obj.analysis.circle.centers(:,2),'r+');
+                    else
+                        h = viscircles(ax,obj.analysis.circle.centers,obj.analysis.circle.radii);
+                    end
+                case 'full'
+                    if any(cellfun(@(str)strcmp(str,'noOutline'),varargin))
+                        h = plot(obj.analysis.full.centers(:,1),obj.analysis.full.centers(:,2),'r+');
+                    else
+                        h = viscircles(ax,obj.analysis.full.centers,obj.analysis.full.radii);
+                    end
+                case 'combined'
+
+                otherwise
+                    return
             end
             hold(ax,'off')
         end
@@ -117,7 +127,13 @@ classdef videoFrame
                         analysis = detectDroplets(obj); % previously detectDroplets(obj)
                     end
                 case 'full'
-                    analysis = detectDropletsFULL(obj);
+                    if ~strcmp(obj.type,'brightfield')
+                        analysis = detectDropletsFULL(obj);
+                    else
+                        analysis = detectBrightfieldDropletsFULL(obj);
+                    end
+                case 'combined'
+                    analysis = combineAnalysis(obj);
                 otherwise
                     analysis = [];
                     return
@@ -126,7 +142,7 @@ classdef videoFrame
         function report = reportData(obj,type)
             analysisFor = fieldnames(obj.analysis); 
             if nargin < 2
-                type = analysisFor{1};
+                type = analysisFor{end};
             elseif ~ismember(analysisFor, type)
                 report = []; return
             end
@@ -137,6 +153,8 @@ classdef videoFrame
                 report = [obj.analysis.(type).centers, obj.analysis.(type).radii];
             end
             report(:,4) = obj.time;
+            
+            report = double(report);
         end
         function positions = positions(obj,type)
             analysisFor = fieldnames(obj.analysis);
@@ -152,6 +170,8 @@ classdef videoFrame
                 positions = obj.analysis.(type).centers;
             end
             positions(:,3) = obj.time;
+            
+            positions = double(positions);
         end
 	end
     methods (Hidden = true)
@@ -227,7 +247,8 @@ classdef videoFrame
             results = unique([centers(metric > 0.1,:), radii(metric > 0.1)],'rows');
             analysis = struct('for','circles',...
                         'centers',results(~isnan(results(:,3)),1:2),...
-                        'radii',results(~isnan(results(:,3)),3));
+                        'radii',results(~isnan(results(:,3)),3),...
+                        'quality',struct('absolute',sum(metric(~isnan(metric))),'relative',median(metric(~isnan(metric)))));
         end
         function analysis = detectFluorescentDroplets(obj)
             % threshold image
@@ -289,13 +310,14 @@ classdef videoFrame
             
             analysis = struct('for','circles',...
                         'centers',vertcat(stats.WeightedCentroid),...
-                        'radii',mean([vertcat(stats.MajorAxisLength),vertcat(stats.MinorAxisLength)]/2,2) +2*d);
+                        'radii',mean([vertcat(stats.MajorAxisLength),vertcat(stats.MinorAxisLength)]/2,2) +1.75*d);
         end
         function analysis = detectDropletsFULL(obj)
             warning('off')
             
             % imfindcircle parameters
             inRange = [20 50]; resizeFactor = [1 2 5 10];
+            %inRange = [10 25]; resizeFactor = [1 2 5 0.5];
             
             % noarmalize and rescale images
             objImage = uint8(double(obj.Image)*255/max(double(obj.Image(:))));
@@ -321,9 +343,9 @@ classdef videoFrame
             radii = cell2mat(R);
             metric = cell2mat(M);
             
-            centers(metric < 0.95,:) = [];
-            radii(metric < 0.95) = [];
-            metric(metric < 0.95) = [];
+            centers(metric < 0.35,:) = [];
+            radii(metric < 0.35) = [];
+            metric(metric < 0.35) = [];
             
             % clear overlapping circles
             [m, n] = meshgrid(1:numel(radii), 1:numel(radii));
@@ -399,7 +421,152 @@ classdef videoFrame
 
             analysis = struct('for','circles',...
                                     'centers',centers,...
-                                    'radii',radii);
+                                    'radii',radii,...
+                        'quality',struct('absolute',sum(metric(~isnan(metric))),'relative',median(metric(~isnan(metric)))));
+        end
+        function analysis = detectBrightfieldDropletsFULL(obj)
+            warning('off')
+            
+            % imfindcircle parameters
+            inRange = [20 50]; resizeFactor = [1 2 5 10];
+            
+            % noarmalize and rescale images
+            objImage = uint8(double(obj.Image)*255/max(double(obj.Image(:))));
+            images = arrayfun(@(n)imresize(objImage,n),resizeFactor,'Uni',0);
+            
+            %---------------------------------------------------------------
+            %         Step 1 Find circles using imfindcircles
+            %---------------------------------------------------------------
+            C(1:numel(resizeFactor)+1,1) = {zeros(0,2)}; R = cell(numel(resizeFactor),1); M = R;
+            
+            n = 1;
+            for m = resizeFactor
+                [C{n}, R{n}, M{n}] = imfindcircles(images{n},inRange,'Sensitivity',0.95,'ObjectPolarity','dark');
+                
+                % rescale center and radius
+                C{n} = C{n}/m; R{n} = R{n}/m;
+                
+                n = n+1;
+            end
+            
+            % clear circles with low metric
+            centers = cell2mat(C);
+            radii = cell2mat(R);
+            metric = cell2mat(M);
+            
+            centers(metric < 0.35,:) = [];
+            radii(metric < 0.35) = [];
+            metric(metric < 0.35) = [];
+            
+            % clear overlapping circles
+            [m, n] = meshgrid(1:numel(radii), 1:numel(radii));
+            X = centers(:,1); Y = centers(:,2);
+            overlap = any( ((X(m) - X(n)).^2 + (Y(m) - Y(n)).^2 <= radii(m).^2) & metric(m) > metric(n) ,2);
+            
+            centers(overlap,:) = [];
+            radii(overlap) = [];
+            % metric(overlap) = [];
+            
+            radii = 0.95*radii; % adjust radii
+            
+            %---------------------------------------------------------------
+            %         Step 2 Remove found circles and try again
+            %---------------------------------------------------------------
+            
+            % remove cirlces already found
+            Im = images{1};
+            [colums, rows] = meshgrid(1:size(Im,2),1:size(Im,1));
+            inCirc = @(c,r)(colums-c(1)).^2 + (rows-c(2)).^2 <= (r+2.5).^2;
+            for i = 1:length(radii)
+                Im(inCirc(centers(i,:),radii(i))) = 0;
+            end
+            
+            A = double(Im); A = A/median(A(A>0));
+            B = A; B(Im<25) = 0; % B(I>200) = 255; % potentially do without
+            D = imopen(logical(B),strel('disk',5)); % imextendedmax(B,5);
+
+            % find coarse estimate of droplets and filter bad shapes
+            % (conjoined droplets)
+            imageStats = regionprops(D,A,'BoundingBox','Extent','Image');
+            badEstimates = [imageStats.Extent] < 0.75; blank = zeros(size(A)); % start blank guess for droplet locations
+            % Note: perfect circles should have extend around 0.78, larger
+            % values usually occur for very small droplets
+
+            % filter out conjoined droplets and find a better estimate
+            % based on distance maxima
+            localRadii = bwdist(~D);
+            localMaxima = logical(imregionalmax(localRadii).*bwmorph(imregionalmax(medfilt2(localRadii)),'thicken',2)); % finds maxima and roughly filters local maxima between two droplets
+            for i = find(~badEstimates) % remove regions of good estimates from image
+                n = imageStats(i);
+                Ys = ceil(n.BoundingBox(1)):floor(n.BoundingBox(1)+n.BoundingBox(3));
+                Xs = ceil(n.BoundingBox(2)):floor(n.BoundingBox(2)+n.BoundingBox(4));
+                localMaxima(Xs,Ys) = zeros(size(n.Image));
+                blank(Xs,Ys) = n.Image; % fill up blank guess with good estimates for droplets
+            end
+
+            % find located maxima and draw into blank 
+            localStats = regionprops(localMaxima,'Centroid','PixelIdxList');
+            centroid = vertcat(localStats.Centroid);
+            radius = arrayfun(@(x)mean(localRadii(x.PixelIdxList))-3,localStats);
+
+            [colums, rows] = meshgrid(1:size(A,2),1:size(A,1));
+            inCirc = @(c,r)(colums-c(1)).^2 + (rows-c(2)).^2 < r.^2;
+
+            for n = 1:length(radius)
+                blank(inCirc(centroid(n,:),radius(n))) = 1;
+            end
+            
+            % get sizes of shapes not connected to inlet/outlet
+            finalGuess = bwmorph(blank,'thicken',2);
+            F = double(A).*finalGuess; F = F/max(F(:)) > exp(-1.5);
+            finalStats = regionprops(logical(imclearborder(F)), obj.Image,'WeightedCentroid','Eccentricity','EquivDiameter','EulerNumber','Image');
+            finalStats([finalStats.Eccentricity] >= 0.75) = [];
+            finalStats([finalStats.EulerNumber] < 1) = [];
+            finalStats([finalStats.EquivDiameter]/2 < 2) = [];
+            
+            %---------------------------------------------------------------
+            %         Step 3 Consolidate and report results
+            %---------------------------------------------------------------
+            warning('on')
+            
+            centers = [centers; vertcat(finalStats.WeightedCentroid)];
+            radii = [radii; vertcat(finalStats.EquivDiameter)/2];
+
+            analysis = struct('for','circles',...
+                                    'centers',centers,...
+                                    'radii',radii,...
+                        'quality',struct('absolute',sum(metric(~isnan(metric))),'relative',median(metric(~isnan(metric)))));
+        end
+        function combined = combineAnalysis(obj)
+            % currently combineAnalysis only combines full and circle
+            % analysis to avoid evaluating circle quality
+            if isempty(obj.analysis) || ~all(ismember({'full','circle'},fieldnames(obj.analysis)))
+                return
+            end
+            
+            if strcmp(obj.type,'fluorescence')
+                full = obj.analysis.full;
+                circle = obj.analysis.circle;
+                
+                circle.radii(circle.radii > 2) = [];
+                circle.centers(circle.radii > 2,:) = [];
+                
+                if isempty(circle.radii)
+                    combined = full;
+                elseif isempty(full.radii)
+                    combined = circle;
+                else
+                    [X,Y] = meshgrid(1:numel(circle.radii),1:numel(full.radii));
+                    overlap = any(reshape(sqrt((circle.centers(X,1) - full.centers(Y,1)).^2 ...
+                                 + (circle.centers(X,2) - full.centers(Y,2)).^2),size(X)) < circle.radii(X));
+                    
+                    combined.centers = vertcat(full.centers, circle.centers(~overlap,:));
+                    combined.radii = vertcat(full.radii, circle.radii(~overlap));
+                    combined.for = full.for;
+                end
+            else
+                return
+            end
         end
         function stats = approximateFrameProperties(obj,varargin) % WORK IN PROGRESS (TOO SLOW)
             A = obj.Image;
