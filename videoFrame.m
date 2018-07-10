@@ -1,11 +1,7 @@
 classdef videoFrame
-    % videoFrame V1.6
-    % minor bug fixes
-    % added videoFrame.combineAnalysis to join two analysis types
-    % adjusted brightfield boundary width factor from 2 to 1.75
-    % fixed a bug that sometimes occured when report returned single values
-    % adjusted metric cutoff in full analysis to 0.35 (from 0.95)
-    % added quality feature to evaluate during plotframe analysis
+    % videoFrame V1.61
+    % removed unnecessary code from detectBrightfieldDropletsFULL and
+    % adjusted radius correction
     
     % Comes with videoMaker to analyze droplets moving in image sequence
     properties
@@ -465,72 +461,9 @@ classdef videoFrame
             
             centers(overlap,:) = [];
             radii(overlap) = [];
-            % metric(overlap) = [];
+            metric(overlap) = [];
             
-            radii = 0.95*radii; % adjust radii
-            
-            %---------------------------------------------------------------
-            %         Step 2 Remove found circles and try again
-            %---------------------------------------------------------------
-            
-            % remove cirlces already found
-            Im = images{1};
-            [colums, rows] = meshgrid(1:size(Im,2),1:size(Im,1));
-            inCirc = @(c,r)(colums-c(1)).^2 + (rows-c(2)).^2 <= (r+2.5).^2;
-            for i = 1:length(radii)
-                Im(inCirc(centers(i,:),radii(i))) = 0;
-            end
-            
-            A = double(Im); A = A/median(A(A>0));
-            B = A; B(Im<25) = 0; % B(I>200) = 255; % potentially do without
-            D = imopen(logical(B),strel('disk',5)); % imextendedmax(B,5);
-
-            % find coarse estimate of droplets and filter bad shapes
-            % (conjoined droplets)
-            imageStats = regionprops(D,A,'BoundingBox','Extent','Image');
-            badEstimates = [imageStats.Extent] < 0.75; blank = zeros(size(A)); % start blank guess for droplet locations
-            % Note: perfect circles should have extend around 0.78, larger
-            % values usually occur for very small droplets
-
-            % filter out conjoined droplets and find a better estimate
-            % based on distance maxima
-            localRadii = bwdist(~D);
-            localMaxima = logical(imregionalmax(localRadii).*bwmorph(imregionalmax(medfilt2(localRadii)),'thicken',2)); % finds maxima and roughly filters local maxima between two droplets
-            for i = find(~badEstimates) % remove regions of good estimates from image
-                n = imageStats(i);
-                Ys = ceil(n.BoundingBox(1)):floor(n.BoundingBox(1)+n.BoundingBox(3));
-                Xs = ceil(n.BoundingBox(2)):floor(n.BoundingBox(2)+n.BoundingBox(4));
-                localMaxima(Xs,Ys) = zeros(size(n.Image));
-                blank(Xs,Ys) = n.Image; % fill up blank guess with good estimates for droplets
-            end
-
-            % find located maxima and draw into blank 
-            localStats = regionprops(localMaxima,'Centroid','PixelIdxList');
-            centroid = vertcat(localStats.Centroid);
-            radius = arrayfun(@(x)mean(localRadii(x.PixelIdxList))-3,localStats);
-
-            [colums, rows] = meshgrid(1:size(A,2),1:size(A,1));
-            inCirc = @(c,r)(colums-c(1)).^2 + (rows-c(2)).^2 < r.^2;
-
-            for n = 1:length(radius)
-                blank(inCirc(centroid(n,:),radius(n))) = 1;
-            end
-            
-            % get sizes of shapes not connected to inlet/outlet
-            finalGuess = bwmorph(blank,'thicken',2);
-            F = double(A).*finalGuess; F = F/max(F(:)) > exp(-1.5);
-            finalStats = regionprops(logical(imclearborder(F)), obj.Image,'WeightedCentroid','Eccentricity','EquivDiameter','EulerNumber','Image');
-            finalStats([finalStats.Eccentricity] >= 0.75) = [];
-            finalStats([finalStats.EulerNumber] < 1) = [];
-            finalStats([finalStats.EquivDiameter]/2 < 2) = [];
-            
-            %---------------------------------------------------------------
-            %         Step 3 Consolidate and report results
-            %---------------------------------------------------------------
-            warning('on')
-            
-            centers = [centers; vertcat(finalStats.WeightedCentroid)];
-            radii = [radii; vertcat(finalStats.EquivDiameter)/2];
+            radii = 0.9*radii; % adjust radii
 
             analysis = struct('for','circles',...
                                     'centers',centers,...
