@@ -1,14 +1,13 @@
-classdef videoMaker
-    % videoMaker V1.6
-    % added velocity as an object property
-    % fixed a bug where previous options were not deleted on successive
-    % calls of redoAnalysis
-    % fixed a bug in plotDistribution
-    % added returnFromOdyssee function
-    % added showIdle option to trackObject
-    % renamed and restructured analyseFrames
-    % added analysisFor to access previous frame data
-    % added plotDistributionOfFrame to plot distributions without tracking
+classdef videoMaker < matlab.mixin.Copyable
+    % videoMaker V1.7
+    % videoMaker V1.62
+    % updated videoMaker.getQualityFrames with findpeaks
+    % updated videoMaker.quality to output true false for getQualityFrames
+    % added legend to plotDistribution and plotDistributionOfFrame
+    % added mem and maxdisp to trackparticles directly for
+    % returnFromOdyssee in fullAnalysis.m
+    % updated videoMaker.returnFromOdyssee to conform with new fullAnalysis
+    % updated videoMaker.save to save file with workspace name and datestr
     
     % Analyses objects in video and returns data or video with
     % respective features and analysis.
@@ -37,7 +36,6 @@ classdef videoMaker
     end
     properties (Dependent)
         Objects % objects found in image analysis
-        Distribution % distribution of particles in video
     end
     properties (SetAccess = protected)
         forType % analysis performed for object types
@@ -52,8 +50,8 @@ classdef videoMaker
     end
     properties (Constant, Hidden)
         implementedTypes = {'circle','full','combined','twoframe'};
-        implementedImageTypes = {'fluorescence', 'brightfield', 'darkfield'};
-        implementedAnalysis = {'tracking','distribution','streamlines'};
+        implementedImageTypes = {'fluorescence', 'brightfield'}; %, 'darkfield'};
+        implementedAnalysis = {'tracking'}; %,'distribution','streamlines'};
         optionsFor = struct('tracking',{{'mem: ','maxdisp: '}});
     end
     
@@ -471,8 +469,9 @@ classdef videoMaker
                             
                         video.CurrentTime = obj.frames(n(Nr)).time;
                         locations = arrayfun(@(object)[object.position(object.inFrame == n(Nr),:) + obj.rect(1:2) ...
-                                                       mean(object.size)/obj.scale.factor],objects,'uni',0);
-                        clean = cellfun(@(x)size(x,2)==3,locations);
+                                                       mean(object.size)/obj.scale.factor],objects,'uni',0);         
+                                                   %object.size(object.inFrame == n(Nr))/obj.scale.factor],objects,'uni',0);
+                        clean = cellfun(@(x)numel(x)==3,locations);
                         Im = readFrame(video);
                         sequence(:,:,:,Nr) = insertShape(Im,'circle',vertcat(locations{clean}),'LineWidth',2,'Color',colors(clean,:));
                     end
@@ -499,7 +498,11 @@ classdef videoMaker
                 [~,name] = fileparts(obj.videoLink);
             end
             
-            save([path,'/',name,'.mat'],'obj')
+            if strcmp(inputname(1),'obj')
+                save([path,'/',name,' ',datestr(now),'.mat'],'obj')
+            else
+                save([path,'/',inputname(1),' ',datestr(now),'.mat'],'obj')
+            end
         end
         
         % Data access functions
@@ -667,6 +670,10 @@ classdef videoMaker
             if nargin < 2 || isempty(ax)
                 ax = axes(figure);
             end
+            figLegend = findobj(ax.Parent,'Type','Legend');
+            if isempty(figLegend)
+                figLegend = legend(ax);
+            end
             
             % filter objects based on location of droplets
             hold(ax,'on')
@@ -693,6 +700,7 @@ classdef videoMaker
                 else
                     h = plot(ax,nan,nan,'-','Color',colorOrder(n,:));
                 end
+                figLegend.String{end} = [inputname(1), ' Region ',num2str(n)];
             end
             hold(ax,'off')
         end
@@ -742,13 +750,14 @@ classdef videoMaker
             end
             
             if ~isnumeric(n)
-                if any(contains(obj.options,{'best:'},'IgnoreCase',true))
+                if any(contains(varargin,{'best:'},'IgnoreCase',true))
                 best = str2double(cell2mat(...
                     regexp(varargin{contains(varargin,{'best:'},'IgnoreCase',true)},'\d*','Match')));
                 else; best = Inf; 
                 end
                 
-                spacing = str2double(cell2mat(regexp(n,'\d*','Match')));
+                vid = obj.openVideo;
+                spacing = str2double(cell2mat(regexp(n,'\d*','Match')))*vid.FrameRate;
                 n = getQualityFrames(obj,spacing,best);
             end
             
@@ -767,6 +776,10 @@ classdef videoMaker
             
             if nargin < 2 || isempty(ax)
                 ax = axes(figure);
+            end
+            figLegend = findobj(ax.Parent,'Type','Legend');
+            if isempty(figLegend)
+                figLegend = legend(ax);
             end
             
             % filter objects based on location of droplets
@@ -794,6 +807,7 @@ classdef videoMaker
                 else
                     h = plot(ax,nan,nan,'-','Color',colorOrder(n,:));
                 end
+                figLegend.String{end} = [inputname(1), ' Region ',num2str(n),' best ',num2str(best), ' frames (spaced ', num2str(spacing), ')'];
             end
             hold(ax,'off')
         end
@@ -846,7 +860,7 @@ classdef videoMaker
             
             estimatedPressure = meanVel/1e6*2.9; %NaN; 2.9psi/(m/s) for IOF roughly estimated
         end
-        function quality(obj,N)
+        function goodEnough = quality(obj,N)
             % estimates quality based on number of particles tracked for
             % more than N frames. Default N is 5.
             if nargin < 2
@@ -907,12 +921,19 @@ classdef videoMaker
             else; qualityStr = 'POOR.';
             end
                 
-            disp(qualityStr)
-%             disp(['Found around ',num2str(estimatedFoundArea),'% of droplets.'])
-            disp(['Found ',num2str(numel(movingObjects)),' moving droplets, ',...
-                num2str(NmoreN), '% of which were tracked well, '])
-            disp(['The remaining ',num2str(numel(objects) - numel(movingObjects)),' droplets were considered idle (',num2str(Nidle),...
-                  '%) or not tracked at all (',num2str(Nless2), '%).']);
+            if nargout < 1
+                disp(qualityStr)
+    %             disp(['Found around ',num2str(estimatedFoundArea),'% of droplets.'])
+                disp(['Found ',num2str(numel(movingObjects)),' moving droplets, ',...
+                    num2str(NmoreN), '% of which were tracked well, '])
+                disp(['The remaining ',num2str(numel(objects) - numel(movingObjects)),' droplets were considered idle (',num2str(Nidle),...
+                      '%) or not tracked at all (',num2str(Nless2), '%).']);
+            elseif contains(qualityStr,'POOR','IgnoreCase',true)
+                goodEnough = false;
+            else
+                goodEnough = true;
+            end
+                
             
             delete(progress);
         end
@@ -957,7 +978,7 @@ classdef videoMaker
         end
     end
     %% Hidden methods
-    methods (Hidden = true) 
+    methods (Hidden = true)
         % Video access functions
         function v = openVideo(obj)
             warning off MATLAB:subscripting:noSubscriptsSpecified
@@ -1014,11 +1035,16 @@ classdef videoMaker
             obj.save([odysseeFolder,'/',name]);
         end
         function obj = returnFromOdyssee(obj)
-            [~, order] = sort([obj.frames.time]);
-            obj.frames = obj.frames(order);
-            if isempty(obj.scale); obj = obj.setupScale; end
-            obj = obj.setupRegions;
-            obj = obj.redoAnalysis('tracking');
+            if isempty(obj.analysis)
+                [~, order] = sort([obj.frames.time]);
+                obj.frames = obj.frames(order);
+                if isempty(obj.scale); obj = obj.setupScale; end
+                obj = obj.setupRegions;
+                obj = obj.redoAnalysis('tracking');
+            else
+                if isempty(obj.scale); obj = obj.setupScale; end
+                obj = obj.setupRegions;
+            end
         end
         function newFolder = prepareForTwoFrameAnalysis(obj)
             [path, name] = fileparts(obj.videoLink);
@@ -1106,7 +1132,7 @@ classdef videoMaker
                 timeRem(rem(Nr,100)+1) = toc;
             end
             delete(progress)
-        end
+        end % consider deleting
         
         % Video analysis functions
         function obj = setupVideoAnalysisFor(obj,varargin)
@@ -1352,7 +1378,7 @@ classdef videoMaker
             close(fig)
             distance = sqrt((x(end)-x(1))^2 + (y(end)-y(1))^2);
             
-            input = inputdlg({['Channel width /mm (',num2str(distance),'pixels)'],'Channel height /um','Slowed down by'},'Setup scale',1,{'1.5','25','4'});
+            input = inputdlg({['Channel width /mm (',num2str(distance),'pixels)'],'Channel height /um','Slowed down by'},'Setup scale',1,{'1.5','90','4'});
             obj.scale = struct('factor',str2double(input{1})*1000/distance,'height',str2double(input{2}),'slowedBy',str2double(input{3}));
         end
         
@@ -1363,7 +1389,7 @@ classdef videoMaker
                 obj.analysis.([of{:},'Options']) = obj.options(startsWith(obj.options,obj.optionsFor.tracking,'IgnoreCase',true));
             end
         end
-        function analysis = trackParticles(obj)
+        function analysis = trackParticles(obj,mem,maxdisp)
             % analysis = trackParticles(obj) performs particle tracking
             % analysis on the objects found by videoMaker. Use runAnalysis
             % or redoAnalysis to perform trackparticles with options.
@@ -1391,15 +1417,19 @@ classdef videoMaker
             particlePositions = cell2mat(reshape(frameData,[],1));
             
             % set memory and displacement
-            if any(contains(obj.options,{'mem:'},'IgnoreCase',true))
-                mem = str2double(cell2mat(...
-                    regexp(obj.options{contains(obj.options,{'mem:'},'IgnoreCase',true)},'\d*','Match')));
-            else; mem = 2; 
+            if nargin < 2
+                if any(contains(obj.options,{'mem:'},'IgnoreCase',true))
+                    mem = str2double(cell2mat(...
+                        regexp(obj.options{contains(obj.options,{'mem:'},'IgnoreCase',true)},'\d*','Match')));
+                else; mem = 2;
+                end
             end
-            if any(contains(obj.options,{'maxdisp:'},'IgnoreCase',true))
-                maxdisp = str2double(cell2mat(...
-                    regexp(obj.options{contains(obj.options,{'maxdisp:'},'IgnoreCase',true)},'\d*','Match')));
-            else; maxdisp = 5; 
+            if nargin < 3
+                if any(contains(obj.options,{'maxdisp:'},'IgnoreCase',true))
+                    maxdisp = str2double(cell2mat(...
+                        regexp(obj.options{contains(obj.options,{'maxdisp:'},'IgnoreCase',true)},'\d*','Match')));
+                else; maxdisp = 5;
+                end
             end
             
             % track particle positions
@@ -1419,20 +1449,27 @@ classdef videoMaker
             if nargin < 3
                 limit = Inf;
             end
+            frameIDs = [];
             
             if isfield(obj.frames(1).analysis.(obj.analysisFor),'quality')
-                quality = [obj.frames.analysis.(obj.analysisFor).quality.absolute];
+                quality = arrayfun(@(frame)frame.analysis.(obj.analysisFor).quality.absolute,obj.frames);
             else
                 warning('No quality assessment available, using number of found objects instead.')
                 quality = arrayfun(@(frame)numel(frame.analysis.(obj.analysisFor).radii),obj.frames);
             end
-            frameIDs = find(quality == movmax(quality,2*k));
-            
-            % clean up frameIDs
-            [~, idx, ~] = unique(fix(frameIDs/(2*k)));
-            frameIDs = frameIDs(idx);
-            [~, order] = sort(quality(frameIDs),'descend');
-            frameIDs = frameIDs(order(1:min([numel(order),limit])));
+%             frameIDs = find(quality == movmax(quality,2*k));
+%             
+%             % clean up frameIDs
+%             [~, idx, ~] = unique(fix(frameIDs/(2*k)));
+%             frameIDs = frameIDs(idx);
+%             [~, order] = sort(quality(frameIDs),'descend');
+%             frameIDs = frameIDs(order(1:min([numel(order),limit])));
+            if max(quality) >= 100
+                [~, frameIDs] = findpeaks(quality, 'MinPeakDistance', k, 'SortStr', 'descend', 'NPeaks', min([numel(obj.frames), limit]), 'MinPeakHeight', 100);
+            elseif ~obj.quality
+                [~, frameIDs] = findpeaks(quality, 'MinPeakDistance', k, 'SortStr', 'descend', 'NPeaks', min([numel(obj.frames), limit]), 'MinPeakHeight', max(quality)*exp(-1));
+                warning(['Peakquality is poor. Peak quality is ',num2str(max(quality(frameIDs)))]);
+            end
         end
         function obj = sizeDistributions(obj) % WRITE include regions
         end
