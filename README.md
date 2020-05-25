@@ -10,11 +10,5 @@ The package is written in Matlab and requires the following software:
 
 To install: 
 ```shell 
-git close https://github.com/soerenbrandt/Droplet-analysis.git
-pip install ./Droplet-analysis
-```
-
-To remove: 
-```shell
-pip remove Droplet-analysis
+git clone https://github.com/soerenbrandt/Droplet-analysis.git
 ```
